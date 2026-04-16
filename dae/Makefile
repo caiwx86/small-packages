@@ -5,14 +5,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=dae
-PKG_VERSION:=2026.04.16
-PKG_RELEASE:=3
+PKG_VERSION:=1.0.0
+PKG_RELEASE:=4
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_VERSION:=null
-PKG_SOURCE_URL:=https://github.com/olicesx/dae.git
-PKG_MIRROR_HASH:=skip
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).zip
+PKG_SOURCE_URL:=https://github.com/daeuniverse/dae/releases/download/v$(PKG_VERSION)/dae-full-src.zip?
+PKG_HASH:=skip
 
 PKG_LICENSE:=AGPL-3.0-only
 PKG_LICENSE_FILE:=LICENSE
@@ -24,57 +22,61 @@ PKG_BUILD_FLAGS:=no-mips16
 
 GO_PKG:=github.com/daeuniverse/dae
 GO_PKG_EXCLUDES:=control/kern/tests
-
-GO_PKG_LDFLAGS:= \
-	-s -w -buildid= \
-	-linkmode external -extldflags '-static -Wl,-s'
 GO_PKG_LDFLAGS_X:= \
 	$(GO_PKG)/cmd.Version=$(PKG_VERSION) \
 	$(GO_PKG)/common/consts.MaxMatchSetLen_=1024
 GO_PKG_TAGS:=trace
 
-PGO_PROFILE:=$(CURDIR)/pprof/default.pgo
-
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/bpf.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-GO_PKG_BUILD_VARS+= \
-	GOFLAGS="-trimpath -buildvcs=false"
+UNZIP_CMD:=unzip -q -d $(PKG_BUILD_DIR) $(DL_DIR)/$(PKG_SOURCE)
 
-GO_PKG_TARGET_VARS+= \
-	CGO_LDFLAGS="$(TARGET_LDFLAGS) -static -Wl,-s" \
-	GOEXPERIMENT=newinliner,simd
-
-define Package/dae
+define Package/dae/Default
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=Web Servers/Proxies
-  TITLE:=A lightweight and high-performance transparent proxy solution
-  DEPENDS:=$(GO_ARCH_DEPENDS) \
-    +ca-bundle +kmod-sched-core +kmod-sched-bpf \
-    +kmod-veth +v2ray-geoip +v2ray-geosite \
-    +@KERNEL_XDP_SOCKETS \
-    +DAE_USE_VMLINUX_BTF:vmlinux-btf
+  URL:=https://github.com/daeuniverse/dae
 endef
 
-define Package/dae/config
-	choice
-		prompt "BTF source for CO-RE"
-		default DAE_USE_KERNEL_BTF
-		depends on PACKAGE_dae
+define Package/dae
+  $(call Package/dae/Default)
+  TITLE:=A lightweight and high-performance transparent proxy solution
+  # You need enable KERNEL_DEBUG_INFO_BTF and KERNEL_BPF_EVENTS
+  DEPENDS:=$(GO_ARCH_DEPENDS) $(BPF_DEPENDS)  \
+    +ca-bundle +kmod-sched-core +kmod-sched-bpf +kmod-xdp-sockets-diag \
+    +kmod-veth
+endef
 
-	config DAE_USE_KERNEL_BTF
-		bool "Use kernel BTF (integrated)"
-		depends on KERNEL_DEBUG_INFO_BTF
+define Package/dae-geoip
+  $(call Package/dae/Default)
+  TITLE:=geoip for dae
+  DEPENDS:=+dae +v2ray-geoip
+  PKGARCH:=all
+endef
 
-	config DAE_USE_VMLINUX_BTF
-		bool "Use vmlinux-btf package"
-	endchoice
+define Package/dae-geosite
+  $(call Package/dae/Default)
+  TITLE:=geosite for dae
+  DEPENDS:=+dae +v2ray-geosite
+  PKGARCH:=all
+endef
+
+define Package/dae/description
+  dae, means goose, is a lightweight and high-performance transparent
+  proxy solution.
+
+  In order to improve the traffic diversion performance as much as possible,
+  dae runs the transparent proxy and traffic diversion suite in the linux
+  kernel by eBPF. Therefore, we have the opportunity to make the direct
+  traffic bypass the forwarding by proxy application and achieve true direct
+  traffic through. Under such a magic trick, there is almost no performance
+  loss and additional resource consumption for direct traffic.
 endef
 
 define Package/dae/conffiles
-/etc/dae/
+/etc/dae/config.dae
 /etc/config/dae
 endef
 
@@ -83,17 +85,9 @@ DAE_CFLAGS:= \
 	-DMAX_MATCH_SET_LEN=1024 \
 	-I$(BPF_HEADERS_DIR)/tools/lib \
 	-I$(BPF_HEADERS_DIR)/arch/$(BPF_KARCH)/include/asm/mach-generic
-	
-define Build/Prepare
-	$(call Build/Prepare/Default)
-	[ -f "$(PGO_PROFILE)" ] && $(CP) "$(PGO_PROFILE)" "$(PKG_BUILD_DIR)/default.pgo" || true
-endef
 
 define Build/Compile
 	( \
-		pushd $(PKG_BUILD_DIR) ; \
-		go get -u=patch ; \
-		go mod tidy ; \
 		export \
 		$(GO_GENERAL_BUILD_CONFIG_VARS) \
 		$(GO_PKG_BUILD_CONFIG_VARS) \
@@ -103,24 +97,36 @@ define Build/Compile
 		BPF_CFLAGS="$(DAE_CFLAGS)" \
 		BPF_TARGET="bpfel,bpfeb" \
 		BPF_TRACE_TARGET="$(GO_ARCH)" ; \
-		go generate ./control/control.go ; \
-		go generate ./trace/trace.go ; \
-		popd ; \
+		go generate $(PKG_BUILD_DIR)/control/control.go ; \
+		go generate $(PKG_BUILD_DIR)/trace/trace.go ; \
+		$(call GoPackage/Build/Compile) ; \
 	)
-	$(call GoPackage/Build/Compile)
 endef
 
 define Package/dae/install
-	$(call GoPackage/Package/Install/Bin,$(PKG_INSTALL_DIR))
-	$(INSTALL_DIR) $(1)/usr/bin/
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/dae $(1)/usr/bin/dae
+	$(call GoPackage/Package/Install/Bin,$(1))
+
 	$(INSTALL_DIR) $(1)/etc/dae/
 	$(INSTALL_CONF) $(PKG_BUILD_DIR)/example.dae $(1)/etc/dae/
+
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) $(CURDIR)/files/dae.config $(1)/etc/config/dae
+
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(CURDIR)/files/dae.init $(1)/etc/init.d/dae
 endef
 
+define Package/dae-geoip/install
+	$(INSTALL_DIR) $(1)/usr/share/dae
+	$(LN) ../v2ray/geoip.dat $(1)/usr/share/dae/geoip.dat
+endef
+
+define Package/dae-geosite/install
+	$(INSTALL_DIR) $(1)/usr/share/dae
+	$(LN) ../v2ray/geosite.dat $(1)/usr/share/dae/geosite.dat
+endef
+
 $(eval $(call GoBinPackage,dae))
 $(eval $(call BuildPackage,dae))
+$(eval $(call BuildPackage,dae-geoip))
+$(eval $(call BuildPackage,dae-geosite))
