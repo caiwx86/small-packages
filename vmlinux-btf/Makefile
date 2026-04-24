@@ -9,7 +9,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=vmlinux-btf
 PKG_VERSION:=$(LINUX_VERSION)
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -57,50 +57,37 @@ define Build/Compile
 	$(PKG_BUILD_DIR)/shadow-kernel/scripts/config \
 		--file $(PKG_BUILD_DIR)/shadow-kernel/.config \
 		--disable WERROR \
+		--enable CGROUPS \
+		--enable CGROUP_BPF \
+		--enable SOCK_CGROUP_DATA \
 		--enable KALLSYMS \
+		--enable PERF_EVENTS \
 		--enable TRACEPOINTS \
-		--enable DEBUG_KERNEL \
-		--disable DEBUG_INFO_NONE \
-		--disable DEBUG_INFO_REDUCED \
-		--disable DEBUG_INFO_SPLIT \
-		--enable DEBUG_INFO \
-		--enable DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
-		--enable DEBUG_INFO_BTF \
-		--enable DEBUG_INFO_BTF_KFUNC \
-		--enable PAHOLE_HAS_LANG_EXCLUDE \
+		--enable KPROBES \
+		--enable UPROBES \
 		--enable BPF \
 		--enable BPF_SYSCALL \
 		--enable BPF_JIT \
 		--enable BPF_JIT_DEFAULT_ON \
-		--enable BPF_JIT_ALWAYS_ON \
-		--enable BPF_STREAM_PARSER \
-		--enable FTRACE \
-		--enable KPROBES \
-		--enable KRETPROBES \
-		--enable KPROBE_EVENTS \
-		--enable BPF_EVENTS \
-		--enable NET_SCHED \
+		--enable INET \
 		--enable NET_INGRESS \
 		--enable NET_EGRESS \
+		--enable BPF_STREAM_PARSER \
+		--enable XDP_SOCKETS \
+		--enable NET_SCHED \
 		--enable NET_SCH_INGRESS \
-		--enable NET_SCH_FIFO \
-		--enable NET_SCH_HTB \
-		--enable NET_SCH_TBF \
-		--enable NET_SCH_FQ \
-		--enable NET_SCH_FQ_CODEL \
-		--enable NET_SCH_CAKE \
 		--enable NET_CLS \
 		--enable NET_CLS_ACT \
-		--enable NET_CLS_U32 \
-		--enable NET_CLS_FLOWER \
-		--enable NET_CLS_BPF \
-		--enable NET_ACT_GACT \
-		--enable NET_ACT_MIRRED \
-		--enable NET_ACT_POLICE \
-		--enable NET_ACT_BPF \
-		--enable MACVLAN \
-		--enable XDP_SOCKETS \
-		--enable XDP_SOCKETS_DIAG \
+		--enable KPROBE_EVENTS \
+		--enable UPROBE_EVENTS \
+		--enable BPF_EVENTS \
+		--enable DEBUG_KERNEL \
+		--enable DEBUG_INFO \
+		--disable DEBUG_INFO_NONE \
+		--enable DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
+		--disable DEBUG_INFO_REDUCED \
+		--disable DEBUG_INFO_SPLIT \
+		--enable DEBUG_INFO_BTF \
 		--set-str EXTRA_FIRMWARE "" \
 		--set-str INITRAMFS_SOURCE ""
 
