@@ -5,22 +5,23 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uugamebooster
-PKG_VERSION:=12.1.4
+PKG_VERSION:=14.0.6
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-$(ARCH).tar.gz
 PKG_SOURCE_URL:=https://uurouter.gdl.netease.com/uuplugin/openwrt-$(ARCH)/v$(PKG_VERSION)/uu.tar.gz?
 ifeq ($(ARCH),aarch64)
-  PKG_HASH:=f140dc99af5a67367e63c811ba5b555c748dea32c3b11c6b5bde6afc25ac960c
+  PKG_HASH:=4fe6fcad525c525ad530af69f102d90c1189330e4e3c3183b577ddde27731e2a
 else ifeq ($(ARCH),arm)
-  PKG_HASH:=d531ff8ccb8b14abbac2d46d8cf1697114c981b059b9fb88adc19322be1ec2af
+  PKG_HASH:=e8693a284d0a9445e73f8d2e9c3d330364cc6371d63c19da03f8e8c47f076caf
 else ifeq ($(ARCH),mipsel)
-  PKG_HASH:=c9003945872a106fd46207afb130a6741ee832bdc3273e2257f35a092cfd966a
+  PKG_HASH:=6fd2497bfdcf228de050119f7f593547a0da3eca9c50baa6bf8d5da6e366c575
 else ifeq ($(ARCH),x86_64)
-  PKG_HASH:=1dd419ac166b124f8d83e4075a65b6547ba589f976894065ce551a66313a6e84
+  PKG_HASH:=1becd5ef81d257b22002f208cd303b04e421c7da4231523b7d82da2c7193b57f
 endif
 
 PKG_LICENSE:=Proprietary
+PKG_MAINTAINER:=Tianling Shen <cnsztl@immortalwrt.org>
 
 include $(INCLUDE_DIR)/package.mk
 
