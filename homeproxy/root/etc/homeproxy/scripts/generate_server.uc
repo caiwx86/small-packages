@@ -129,7 +129,7 @@ uci.foreach(uciconfig, uciserver, (cfg) => {
 				email: cfg.tls_acme_email,
 				provider: cfg.tls_acme_provider,
 				disable_http_challenge: strToBool(cfg.tls_acme_dhc),
-				disable_tls_alpn_challenge: (cfg.tls_acme_dtac),
+				disable_tls_alpn_challenge: strToBool(cfg.tls_acme_dtac),
 				alternative_http_port: strToInt(cfg.tls_acme_ahp),
 				alternative_tls_port: strToInt(cfg.tls_acme_atp),
 				external_account: (cfg.tls_acme_external_account === '1') ? {
@@ -182,4 +182,5 @@ if (length(config.inbounds) === 0)
 	exit(1);
 
 system('mkdir -p ' + RUN_DIR);
-writefile(RUN_DIR + '/sing-box-s.json', sprintf('%.J\n', removeBlankAttrs(config)));
+if (!writefile(RUN_DIR + '/sing-box-s.json.new', sprintf('%.J\n', removeBlankAttrs(config))))
+	exit(1);

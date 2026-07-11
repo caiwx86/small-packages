@@ -17,7 +17,7 @@ import { init_action } from 'luci.sys';
 
 import {
 	wGET, decodeBase64Str, getTime, isEmpty, parseURL,
-	validation, HP_DIR, RUN_DIR
+	shellQuote, validation, HP_DIR, RUN_DIR
 } from 'homeproxy';
 
 /* UCI config start */
@@ -78,6 +78,18 @@ function log(...args) {
 	const logfile = open(`${RUN_DIR}/homeproxy.log`, 'a');
 	logfile.write(`${getTime()} [SUBSCRIBE] ${join(' ', args)}\n`);
 	logfile.close();
+}
+
+if (getenv('HOMEPROXY_SUBSCRIPTION_LOCKED') !== '1') {
+	const lock_path = `${RUN_DIR}/update_subscriptions.lock`;
+	const script_path = `${HP_DIR}/scripts/update_subscriptions.uc`;
+	const status = system(sprintf(
+		'HOMEPROXY_SUBSCRIPTION_LOCKED=1 flock -n %s %s',
+		shellQuote(lock_path), shellQuote(script_path)
+	));
+	if (status !== 0)
+		log('Subscription update did not complete; another task may be running.');
+	exit(status);
 }
 
 function has_value(value) {
@@ -1000,7 +1012,8 @@ function main() {
 			const label = config.label;
 			config.label = null;
 			const confHash = md5(sprintf('%J', config)),
-			      nameHash = md5(label);
+			      nameHash = md5(groupHash + ':' + label),
+			      legacyNameHash = md5(label);
 			config.label = label;
 
 			if (filter_check(config.label))
@@ -1018,6 +1031,7 @@ function main() {
 				push(node_result[length(node_result)-1], config);
 				node_cache[groupHash][confHash] = config;
 				node_cache[groupHash][nameHash] = config;
+				node_cache[groupHash][legacyNameHash] = config;
 
 				count++;
 			}
@@ -1040,7 +1054,7 @@ function main() {
 		return false;
 	}
 
-	let added = 0, removed = 0;
+	let added = 0, removed = 0, updated = 0;
 	uci.foreach(uciconfig, ucinode, (cfg) => {
 		/* Nodes created by the user */
 		if (!cfg.grouphash)
@@ -1054,50 +1068,54 @@ function main() {
 			uci.delete(uciconfig, cfg['.name']);
 			removed++;
 
-			log(sprintf('Removing node: %s.', cfg.label || cfg['name']));
+			log(sprintf('Removing node: %s.', cfg.label || cfg['.name']));
 		} else {
-			map(keys(cfg), (v) => {
-				if (v in node_cache[cfg.grouphash][cfg['.name']])
-					uci.set(uciconfig, cfg['.name'], v, node_cache[cfg.grouphash][cfg['.name']][v]);
-				else
-					uci.delete(uciconfig, cfg['.name'], v);
-			});
-			node_cache[cfg.grouphash][cfg['.name']].isExisting = true;
+			const next = node_cache[cfg.grouphash][cfg['.name']];
+			for (let option in keys(cfg))
+				if (!match(option, /^\./) && !(option in next))
+					uci.delete(uciconfig, cfg['.name'], option);
+
+			for (let option in keys(next))
+				if (option !== 'isExisting')
+					uci.set(uciconfig, cfg['.name'], option, next[option]);
+
+			next.isExisting = true;
+			updated++;
 		}
 	});
+
 	for (let nodes in node_result)
 		map(nodes, (node) => {
 			if (node.isExisting)
 				return null;
 
-			const nameHash = md5(node.label);
+			const nameHash = md5(node.grouphash + ':' + node.label);
 			uci.set(uciconfig, nameHash, 'node');
 			map(keys(node), (v) => uci.set(uciconfig, nameHash, v, node[v]));
 
 			added++;
 			log(sprintf('Adding node: %s.', node.label));
 		});
-	uci.commit(uciconfig);
 
-	let need_restart = (via_proxy !== '1');
 	if (!isEmpty(main_node)) {
 		const first_server = uci.get_first(uciconfig, ucinode);
 		if (first_server) {
 			let main_urltest_nodes;
 			if (main_node === 'urltest') {
-				main_urltest_nodes = filter(uci.get(uciconfig, ucimain, 'main_urltest_nodes'), (v) => {
+				main_urltest_nodes = filter(normalize_list(uci.get(uciconfig, ucimain, 'main_urltest_nodes')) || [], (v) => {
 					if (!uci.get(uciconfig, v)) {
 						log(sprintf('Node %s is gone, removing from urltest list.', v));
 						return false;
 					}
 					return true;
 				});
+				if (length(main_urltest_nodes))
+					uci.set(uciconfig, ucimain, 'main_urltest_nodes', main_urltest_nodes);
 			}
 
 			if ((main_node === 'urltest') ? !length(main_urltest_nodes) : !uci.get(uciconfig, main_node)) {
 				uci.set(uciconfig, ucimain, 'main_node', first_server);
-				uci.commit(uciconfig);
-				need_restart = true;
+				uci.delete(uciconfig, ucimain, 'main_urltest_nodes');
 
 				log('Main node is gone, switching to the first node.');
 			}
@@ -1105,19 +1123,20 @@ function main() {
 			if (!isEmpty(main_udp_node) && main_udp_node !== 'same') {
 				let main_udp_urltest_nodes;
 				if (main_udp_node === 'urltest') {
-					main_udp_urltest_nodes = filter(uci.get(uciconfig, ucimain, 'main_udp_urltest_nodes'), (v) => {
+					main_udp_urltest_nodes = filter(normalize_list(uci.get(uciconfig, ucimain, 'main_udp_urltest_nodes')) || [], (v) => {
 						if (!uci.get(uciconfig, v)) {
 							log(sprintf('Node %s is gone, removing from urltest list.', v));
 							return false;
 						}
 						return true;
 					});
+					if (length(main_udp_urltest_nodes))
+						uci.set(uciconfig, ucimain, 'main_udp_urltest_nodes', main_udp_urltest_nodes);
 				}
 
 				if ((main_udp_node === 'urltest') ? !length(main_udp_urltest_nodes) : !uci.get(uciconfig, main_udp_node)) {
 					uci.set(uciconfig, ucimain, 'main_udp_node', first_server);
-					uci.commit(uciconfig);
-					need_restart = true;
+					uci.delete(uciconfig, ucimain, 'main_udp_urltest_nodes');
 
 					log('Main UDP node is gone, switching to the first node.');
 				}
@@ -1125,20 +1144,19 @@ function main() {
 		} else {
 			uci.set(uciconfig, ucimain, 'main_node', 'nil');
 			uci.set(uciconfig, ucimain, 'main_udp_node', 'nil');
-			uci.commit(uciconfig);
-			need_restart = true;
+			uci.delete(uciconfig, ucimain, 'main_urltest_nodes');
+			uci.delete(uciconfig, ucimain, 'main_udp_urltest_nodes');
 
 			log('No available node, disable tproxy.');
 		}
 	}
+	uci.commit(uciconfig);
 
-	if (need_restart) {
-		log('Restarting service...');
-		init_action('homeproxy', 'stop');
-		init_action('homeproxy', 'start');
-	}
+	log('Restarting service...');
+	init_action('homeproxy', 'stop');
+	init_action('homeproxy', 'start');
 
-	log(sprintf('%s nodes added, %s removed.', added, removed));
+	log(sprintf('%s nodes added, %s updated, %s removed.', added, updated, removed));
 	log('Successfully updated subscriptions.');
 }
 

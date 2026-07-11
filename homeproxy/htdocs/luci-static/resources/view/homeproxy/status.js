@@ -60,56 +60,107 @@ function getConnStat(o, site) {
 	]);
 }
 
-function getResVersion(o, type) {
-	const callResVersion = rpc.declare({
+const resources = [
+	{
+		type: 'china_ip4',
+		name: _('China IPv4 list')
+	},
+	{
+		type: 'china_ip6',
+		name: _('China IPv6 list')
+	},
+	{
+		type: 'china_list',
+		name: _('China domain list')
+	},
+	{
+		type: 'gfw_list',
+		name: _('GFW domain list')
+	}
+];
+
+function getResources(o) {
+	const callResStatus = rpc.declare({
 		object: 'luci.homeproxy',
-		method: 'resources_get_version',
-		params: ['type'],
+		method: 'resources_get',
 		expect: { '': {} }
 	});
 
 	const callResUpdate = rpc.declare({
 		object: 'luci.homeproxy',
 		method: 'resources_update',
-		params: ['type'],
 		expect: { '': {} }
 	});
 
-	return L.resolveDefault(callResVersion(type), {}).then((res) => {
-		let spanTemp = E('div', { 'style': 'cbi-value-field' }, [
-			E('button', {
-				'class': 'btn cbi-button cbi-button-action',
-				'click': ui.createHandlerFn(this, () => {
-					return L.resolveDefault(callResUpdate(type), {}).then((res) => {
-						switch (res.status) {
-						case 0:
-							o.description = _('Successfully updated.');
-							break;
-						case 1:
-							o.description = _('Update failed.');
-							break;
-						case 2:
-							o.description = _('Already in updating.');
-							break;
-						case 3:
-							o.description = _('Already at the latest version.');
-							break;
-						default:
-							o.description = _('Unknown error.');
-							break;
-						}
-
-						return o.map.reset();
-					});
-				})
-			}, [ _('Check update') ]),
-			' ',
-			E('strong', { 'style': (res.error ? 'color:red' : 'color:green') },
-				[ res.error ? 'not found' : res.version ]
-			),
+	return L.resolveDefault(callResStatus(), { resources: [] }).then((result) => {
+		const status = {};
+		(result.resources || []).forEach((resource) => {
+			status[resource.type] = resource;
+		});
+		const table = E('table', { 'class': 'table' }, [
+			E('tr', { 'class': 'tr table-titles' }, [
+				E('th', { 'class': 'th' }, _('Name')),
+				E('th', { 'class': 'th' }, _('Version')),
+				E('th', { 'class': 'th' }, _('Source'))
+			])
 		]);
+		const rows = resources.map((resource) => {
+			const resourceStatus = status[resource.type] || {};
+			const available = resourceStatus.version;
+			const source = resourceStatus.source;
 
-		o.default = spanTemp;
+			return [
+				resource.name,
+				E('span', { 'style': available ? 'color:green' : 'color:red' },
+					available || '-'),
+				source ? E('a', {
+					'href': source,
+					'target': '_blank',
+					'rel': 'noreferrer noopener',
+					'style': 'word-break:break-all'
+				}, source) : '-'
+			];
+		});
+		cbi_update_table(table, rows);
+
+		return E('div', { 'class': 'cbi-map' }, [
+			E('h3', { 'name': 'content', 'style': 'align-items:center;display:flex' }, [
+				_('Resources management'),
+				E('button', {
+					'class': 'btn cbi-button cbi-button-action',
+					'style': 'margin-left:4px',
+					'click': ui.createHandlerFn(this, () => {
+						return L.resolveDefault(callResUpdate(), {}).then((res) => {
+							let message, severity = 'info';
+
+							switch (res.status) {
+							case 0:
+								message = _('Successfully updated.');
+								break;
+							case 1:
+								message = _('Update failed.');
+								severity = 'error';
+								break;
+							case 2:
+								message = _('Already in updating.');
+								break;
+							case 3:
+								message = _('Already at the latest version.');
+								break;
+							default:
+								message = _('Unknown error.');
+								severity = 'error';
+								break;
+							}
+
+							ui.addNotification(null, E('p', message), severity);
+							return o.map.reset();
+						});
+					})
+				}, [ _('Update all') ])
+			]),
+			E('div', { 'class': 'cbi-section' }, [ table ])
+		]);
 	});
 }
 
@@ -238,24 +289,11 @@ return view.extend({
 		o = s.option(form.DummyValue, '_check_google', _('Google'));
 		o.cfgvalue = L.bind(getConnStat, this, o, 'google');
 
-		s = m.section(form.NamedSection, 'config', 'homeproxy', _('Resources management'));
+		s = m.section(form.NamedSection, 'config', 'homeproxy');
 		s.anonymous = true;
 
-		o = s.option(form.DummyValue, '_china_ip4_version', _('China IPv4 list version'));
-		o.cfgvalue = L.bind(getResVersion, this, o, 'china_ip4');
-		o.rawhtml = true;
-
-		o = s.option(form.DummyValue, '_china_ip6_version', _('China IPv6 list version'));
-		o.cfgvalue = L.bind(getResVersion, this, o, 'china_ip6');
-		o.rawhtml = true;
-
-		o = s.option(form.DummyValue, '_china_list_version', _('China list version'));
-		o.cfgvalue = L.bind(getResVersion, this, o, 'china_list');
-		o.rawhtml = true;
-
-		o = s.option(form.DummyValue, '_gfw_list_version', _('GFW list version'));
-		o.cfgvalue = L.bind(getResVersion, this, o, 'gfw_list');
-		o.rawhtml = true;
+		o = s.option(form.DummyValue, '_resources');
+		o.render = L.bind(getResources, this, o);
 
 		o = s.option(form.Value, 'github_token', _('GitHub token'));
 		o.password = true;

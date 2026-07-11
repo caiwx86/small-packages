@@ -55,6 +55,10 @@ if (!uci.get(uciconfig, uciinfra, 'ntp_server'))
 if (!isEmpty(uci.get(uciconfig, uciinfra, 'tun_gso')))
 	uci.delete(uciconfig, uciinfra, 'tun_gso');
 
+/* endpoint_independent_nat has been removed */
+if (!isEmpty(uci.get(uciconfig, ucirouting, 'endpoint_independent_nat')))
+	uci.delete(uciconfig, ucirouting, 'endpoint_independent_nat');
+
 /* create migration section */
 if (!uci.get(uciconfig, ucimigration))
 	uci.set(uciconfig, ucimigration, uciconfig);
@@ -99,6 +103,9 @@ uci.foreach(uciconfig, ucidnsserver, (cfg) => {
 	/* legacy format was deprecated in sb 1.12 */
 	if (cfg.address) {
 		const addr = parseURL((!match(cfg.address, /:\/\//) ? 'udp://' : '') + (validation('ip6addr', cfg.address) ? `[${cfg.address}]` : cfg.address));
+		if (!addr)
+			return;
+
 		/* RCode was moved into DNS rules */
 		if (addr.protocol === 'rcode') {
 			dns_server_migration[cfg['.name']] = { action: 'predefined' };
@@ -157,10 +164,11 @@ uci.foreach(uciconfig, ucidnsrule, (cfg) => {
 	/* outbound was removed in sb 1.12 */
 	if (cfg.outbound) {
 		uci.delete(uciconfig, cfg['.name']);
-		if (!cfg.enabled)
+		if (cfg.enabled !== '1')
 			return;
 
-		map(cfg.outbound, (outbound) => {
+		const outbounds = (type(cfg.outbound) === 'array') ? cfg.outbound : [ cfg.outbound ];
+		for (let outbound in outbounds) {
 			switch (outbound) {
 			case 'direct-out':
 			case 'block-out':
@@ -169,16 +177,16 @@ uci.foreach(uciconfig, ucidnsrule, (cfg) => {
 				uci.set(uciconfig, ucirouting, 'default_outbound_dns', cfg.server);
 				break;
 			default:
-				uci.set(uciconfig, cfg.outbound, 'domain_resolver', cfg.server);
-				break;
+				uci.set(uciconfig, outbound, 'domain_resolver', cfg.server);
+					break;
 			}
-		});
+		}
 
 		return;
 	}
 
 	/* rule_set_ipcidr_match_source was renamed in sb 1.10 */
-	if (cfg.rule_set_ipcidr_match_source === '1')
+	if (!isEmpty(cfg.rule_set_ipcidr_match_source))
 		uci.rename(uciconfig, cfg['.name'], 'rule_set_ipcidr_match_source', 'rule_set_ip_cidr_match_source');
 
 	/* block-dns was moved into action in sb 1.11 */
@@ -208,6 +216,11 @@ uci.foreach(uciconfig, ucidnsrule, (cfg) => {
 
 /* nodes options */
 uci.foreach(uciconfig, ucinode, (cfg) => {
+	/* destination override and Proxy Protocol were removed from direct outbound */
+	for (let option in ['override_address', 'override_port', 'proxy_protocol'])
+		if (!isEmpty(cfg[option]))
+			uci.delete(uciconfig, cfg['.name'], option);
+
 	/* tls_ech_tls_disable_drs is useless and deprecated in sb 1.12 */
 	if (!isEmpty(cfg.tls_ech_tls_disable_drs))
 		uci.delete(uciconfig, cfg['.name'], 'tls_ech_tls_disable_drs');
@@ -224,7 +237,7 @@ uci.foreach(uciconfig, ucinode, (cfg) => {
 /* routing rules options */
 uci.foreach(uciconfig, uciroutingrule, (cfg) => {
 	/* rule_set_ipcidr_match_source was renamed in sb 1.10 */
-	if (cfg.rule_set_ipcidr_match_source === '1')
+	if (!isEmpty(cfg.rule_set_ipcidr_match_source))
 		uci.rename(uciconfig, cfg['.name'], 'rule_set_ipcidr_match_source', 'rule_set_ip_cidr_match_source');
 
 	/* block-out was moved into action in sb 1.11 */

@@ -7,8 +7,12 @@
 
 'use strict';
 
-import { access, error, lstat, popen, readfile, writefile } from 'fs';
+import { access, lstat, popen, readfile, writefile } from 'fs';
 import { cursor } from 'uci';
+
+import {
+	removeBlankAttrs, renderEndpoint, renderOutbound
+} from '/etc/homeproxy/scripts/homeproxy.uc';
 
 /* Kanged from ucode/luci */
 function shellquote(s) {
@@ -21,6 +25,12 @@ function hasKernelModule(kmod) {
 
 const HP_DIR = '/etc/homeproxy';
 const RUN_DIR = '/var/run/homeproxy';
+const RESOURCE_SOURCES = {
+	china_ip4: 'https://cdn.jsdelivr.net/gh/Loyalsoldier/surge-rules@release/cncidr.txt',
+	china_ip6: 'https://cdn.jsdelivr.net/gh/Loyalsoldier/surge-rules@release/cncidr.txt',
+	china_list: 'https://cdn.jsdelivr.net/gh/Loyalsoldier/surge-rules@release/direct.txt',
+	gfw_list: 'https://cdn.jsdelivr.net/gh/Loyalsoldier/surge-rules@release/gfw.txt'
+};
 
 const methods = {
 	acllist_read: {
@@ -60,7 +70,7 @@ const methods = {
 	certificate_write: {
 		args: { filename: 'filename' },
 		call: function(req) {
-			const writeCertificate = (filename, priv) => {
+			const writeCertificate = (filename, kind) => {
 				const tmpcert = '/tmp/homeproxy_certificate.tmp';
 				const filestat = lstat(tmpcert);
 
@@ -76,8 +86,10 @@ const methods = {
 				}
 
 				/* Kanged from luci-proto-openconnect */
-				const beg = priv ? /^-----BEGIN (RSA|EC) PRIVATE KEY-----$/ : /^-----BEGIN CERTIFICATE-----$/,
-				      end = priv ? /^-----END (RSA|EC) PRIVATE KEY-----$/ : /^-----END CERTIFICATE-----$/,
+				const beg = (kind === 'private') ? /^-----BEGIN (RSA|EC) PRIVATE KEY-----$/ :
+				            ((kind === 'ech') ? /^-----BEGIN ECH CONFIGS-----$/ : /^-----BEGIN CERTIFICATE-----$/),
+				      end = (kind === 'private') ? /^-----END (RSA|EC) PRIVATE KEY-----$/ :
+				            ((kind === 'ech') ? /^-----END ECH CONFIGS-----$/ : /^-----END CERTIFICATE-----$/),
 				      lines = split(trim(filecontent), /[\r\n]/);
 				let start = false, i;
 
@@ -100,7 +112,10 @@ const methods = {
 					filecontent += '\n';
 
 				system(`mkdir -p ${HP_DIR}/certs`);
-				writefile(`${HP_DIR}/certs/${filename}.pem`, filecontent);
+				const certfile = `${HP_DIR}/certs/${filename}.pem`;
+				writefile(certfile, filecontent);
+				if (kind === 'private')
+					system(`chmod 600 ${certfile}`);
 				system(`rm -f ${tmpcert}`);
 
 				return { result: true };
@@ -110,10 +125,13 @@ const methods = {
 			switch (filename) {
 			case 'client_ca':
 			case 'server_publickey':
-				return writeCertificate(filename, false);
+				return writeCertificate(filename, 'certificate');
+				break;
+			case 'client_ech_conf':
+				return writeCertificate(filename, 'ech');
 				break;
 			case 'server_privatekey':
-				return writeCertificate(filename, true);
+				return writeCertificate(filename, 'private');
 				break;
 			default:
 				return { result: false, error: 'illegal cerificate filename' };
@@ -155,8 +173,8 @@ const methods = {
 				if (!section || section['.type'] !== 'node')
 					return { id: section_id, label: fallback_name || section_id, type: null };
 
-				const address = trim(section.override_address || section.address || '');
-				const port = trim(section.override_port || section.port || '');
+				const address = trim(section.address || '');
+				const port = trim(section.port || '');
 				const label = trim(section.label || '') || ((address && port) ? `${address}:${port}` : section_id);
 				return {
 					id: section_id,
@@ -247,195 +265,6 @@ const methods = {
 				icmp_error: (extras && extras.icmp_error) ? extras.icmp_error : null,
 				rp_runtime: (extras && extras.rp_runtime) ? extras.rp_runtime : null
 			});
-
-			const strToBool = (str) => ((str === '1') || null);
-			const strToInt = (str) => (str != null && trim(sprintf('%s', str)) !== '') ? (int(str) || null) : null;
-			const strToTime = (str) => (str != null && trim(sprintf('%s', str)) !== '') ? (str + 's') : null;
-
-			function removeBlankAttrs(res) {
-				let content;
-
-				if (type(res) === 'object') {
-					content = {};
-					map(keys(res), (k) => {
-						if (type(res[k]) in ['array', 'object'])
-							content[k] = removeBlankAttrs(res[k]);
-						else if (res[k] !== null && res[k] !== '')
-							content[k] = res[k];
-					});
-				} else if (type(res) === 'array') {
-					content = [];
-					map(res, (k) => {
-						if (type(k) in ['array', 'object'])
-							push(content, removeBlankAttrs(k));
-						else if (k !== null && k !== '')
-							push(content, k);
-					});
-				} else
-					return res;
-
-				return content;
-			}
-
-			const parse_port = (strport) => {
-				if (type(strport) !== 'array' || length(strport) === 0)
-					return null;
-
-				let ports = [];
-				for (let i = 0; i < length(strport); i++)
-					push(ports, int(strport[i]));
-
-				return ports;
-			};
-
-			const generate_endpoint = (node_cfg) => {
-				if (type(node_cfg) !== 'object' || length(node_cfg) === 0)
-					return null;
-
-				return {
-					type: node_cfg.type,
-					tag: 'cfg-' + node_cfg['.name'] + '-out',
-					address: node_cfg.wireguard_local_address,
-					mtu: strToInt(node_cfg.wireguard_mtu),
-					private_key: node_cfg.wireguard_private_key,
-					peers: (node_cfg.type === 'wireguard') ? [
-						{
-							address: node_cfg.address,
-							port: strToInt(node_cfg.port),
-							allowed_ips: [
-								'0.0.0.0/0',
-								'::/0'
-							],
-							persistent_keepalive_interval: strToInt(node_cfg.wireguard_persistent_keepalive_interval),
-							public_key: node_cfg.wireguard_peer_public_key,
-							pre_shared_key: node_cfg.wireguard_pre_shared_key,
-							reserved: parse_port(node_cfg.wireguard_reserved)
-						}
-					] : null,
-					system: (node_cfg.type === 'wireguard') ? false : null,
-					tcp_fast_open: strToBool(node_cfg.tcp_fast_open),
-					tcp_multi_path: strToBool(node_cfg.tcp_multi_path),
-					udp_fragment: strToBool(node_cfg.udp_fragment)
-				};
-			};
-
-			const generate_outbound = (node_cfg) => {
-				if (type(node_cfg) !== 'object' || length(node_cfg) === 0)
-					return null;
-
-				return {
-					type: node_cfg.type,
-					tag: 'cfg-' + node_cfg['.name'] + '-out',
-
-					server: node_cfg.address,
-					server_port: strToInt(node_cfg.port),
-					server_ports: node_cfg.hysteria_hopping_port,
-
-					username: (node_cfg.type !== 'ssh') ? node_cfg.username : null,
-					user: (node_cfg.type === 'ssh') ? node_cfg.username : null,
-					password: node_cfg.password,
-
-					override_address: node_cfg.override_address,
-					override_port: strToInt(node_cfg.override_port),
-					proxy_protocol: strToInt(node_cfg.proxy_protocol),
-					idle_session_check_interval: strToTime(node_cfg.anytls_idle_session_check_interval),
-					idle_session_timeout: strToTime(node_cfg.anytls_idle_session_timeout),
-					min_idle_session: strToInt(node_cfg.anytls_min_idle_session),
-					hop_interval: strToTime(node_cfg.hysteria_hop_interval),
-					up_mbps: strToInt(node_cfg.hysteria_up_mbps),
-					down_mbps: strToInt(node_cfg.hysteria_down_mbps),
-					obfs: node_cfg.hysteria_obfs_type ? {
-						type: node_cfg.hysteria_obfs_type,
-						password: node_cfg.hysteria_obfs_password
-					} : node_cfg.hysteria_obfs_password,
-					auth: (node_cfg.hysteria_auth_type === 'base64') ? node_cfg.hysteria_auth_payload : null,
-					auth_str: (node_cfg.hysteria_auth_type === 'string') ? node_cfg.hysteria_auth_payload : null,
-					recv_window_conn: strToInt(node_cfg.hysteria_recv_window_conn),
-					recv_window: strToInt(node_cfg.hysteria_revc_window),
-					disable_mtu_discovery: strToBool(node_cfg.hysteria_disable_mtu_discovery),
-					method: node_cfg.shadowsocks_encrypt_method,
-					plugin: node_cfg.shadowsocks_plugin,
-					plugin_opts: node_cfg.shadowsocks_plugin_opts,
-					version: (node_cfg.type === 'shadowtls') ? strToInt(node_cfg.shadowtls_version) : ((node_cfg.type === 'socks') ? node_cfg.socks_version : null),
-					client_version: node_cfg.ssh_client_version,
-					host_key: node_cfg.ssh_host_key,
-					host_key_algorithms: node_cfg.ssh_host_key_algo,
-					private_key: node_cfg.ssh_priv_key,
-					private_key_passphrase: node_cfg.ssh_priv_key_pp,
-					uuid: node_cfg.uuid,
-					congestion_control: node_cfg.tuic_congestion_control,
-					udp_relay_mode: node_cfg.tuic_udp_relay_mode,
-					udp_over_stream: strToBool(node_cfg.tuic_udp_over_stream),
-					zero_rtt_handshake: strToBool(node_cfg.tuic_enable_zero_rtt),
-					heartbeat: strToTime(node_cfg.tuic_heartbeat),
-					flow: node_cfg.vless_flow,
-					alter_id: strToInt(node_cfg.vmess_alterid),
-					security: node_cfg.vmess_encrypt,
-					global_padding: strToBool(node_cfg.vmess_global_padding),
-					authenticated_length: strToBool(node_cfg.vmess_authenticated_length),
-					packet_encoding: node_cfg.packet_encoding,
-
-					multiplex: (node_cfg.multiplex === '1') ? {
-						enabled: true,
-						protocol: node_cfg.multiplex_protocol,
-						max_connections: strToInt(node_cfg.multiplex_max_connections),
-						min_streams: strToInt(node_cfg.multiplex_min_streams),
-						max_streams: strToInt(node_cfg.multiplex_max_streams),
-						padding: strToBool(node_cfg.multiplex_padding),
-						brutal: (node_cfg.multiplex_brutal === '1') ? {
-							enabled: true,
-							up_mbps: strToInt(node_cfg.multiplex_brutal_up),
-							down_mbps: strToInt(node_cfg.multiplex_brutal_down)
-						} : null
-					} : null,
-					tls: (node_cfg.tls === '1') ? {
-						enabled: true,
-						server_name: node_cfg.tls_sni,
-						insecure: strToBool(node_cfg.tls_insecure),
-						alpn: node_cfg.tls_alpn,
-						min_version: node_cfg.tls_min_version,
-						max_version: node_cfg.tls_max_version,
-						cipher_suites: node_cfg.tls_cipher_suites,
-						certificate_path: node_cfg.tls_cert_path,
-						ech: (node_cfg.tls_ech === '1') ? {
-							enabled: true,
-							config: node_cfg.tls_ech_config,
-							config_path: node_cfg.tls_ech_config_path
-						} : null,
-						utls: node_cfg.tls_utls ? {
-							enabled: true,
-							fingerprint: node_cfg.tls_utls
-						} : null,
-						reality: (node_cfg.tls_reality === '1') ? {
-							enabled: true,
-							public_key: node_cfg.tls_reality_public_key,
-							short_id: node_cfg.tls_reality_short_id
-						} : null
-					} : null,
-					transport: node_cfg.transport ? {
-						type: node_cfg.transport,
-						host: node_cfg.http_host || node_cfg.httpupgrade_host,
-						path: node_cfg.http_path || node_cfg.ws_path,
-						headers: node_cfg.ws_host ? {
-							Host: node_cfg.ws_host
-						} : null,
-						method: node_cfg.http_method,
-						max_early_data: strToInt(node_cfg.websocket_early_data),
-						early_data_header_name: node_cfg.websocket_early_data_header,
-						service_name: node_cfg.grpc_servicename,
-						idle_timeout: node_cfg.http_idle_timeout,
-						ping_timeout: node_cfg.http_ping_timeout,
-						permit_without_stream: strToBool(node_cfg.grpc_permit_without_stream)
-					} : null,
-					udp_over_tcp: (node_cfg.udp_over_tcp === '1') ? {
-						enabled: true,
-						version: strToInt(node_cfg.udp_over_tcp_version)
-					} : null,
-					tcp_fast_open: strToBool(node_cfg.tcp_fast_open),
-					tcp_multi_path: strToBool(node_cfg.tcp_multi_path),
-					udp_fragment: strToBool(node_cfg.udp_fragment)
-				};
-			};
 
 			const isControllerPortBusy = (port) => {
 				const hex_port = sprintf('%04X', int(port));
@@ -645,7 +474,7 @@ const methods = {
 					}
 				};
 
-				const rendered_outbound = (node_cfg.type === 'wireguard') ? generate_endpoint(node_cfg) : generate_outbound(node_cfg);
+				const rendered_outbound = (node_cfg.type === 'wireguard') ? renderEndpoint(node_cfg) : renderOutbound(node_cfg);
 				if (rendered_outbound && type(rendered_outbound) === 'object')
 					rendered_outbound.tag = selected_tag;
 
@@ -1104,22 +933,23 @@ const methods = {
 		}
 	},
 
-	resources_get_version: {
-		args: { type: 'type' },
-		call: function(req) {
-			const version = trim(readfile(`${HP_DIR}/resources/${req.args?.type}.ver`));
-			return { version: version, error: error() };
+	resources_get: {
+		call: function() {
+			let resources = [];
+			for (let resource_type in keys(RESOURCE_SOURCES)) {
+				const version = trim(readfile(`${HP_DIR}/resources/${resource_type}.ver`) || '');
+				push(resources, {
+					type: resource_type,
+					version: version || null,
+					source: RESOURCE_SOURCES[resource_type]
+				});
+			}
+			return { resources };
 		}
 	},
 	resources_update: {
-		args: { type: 'type' },
-		call: function(req) {
-			if (req.args?.type) {
-				const type = shellquote(req.args?.type);
-				const exit_code = system(`${HP_DIR}/scripts/update_resources.sh ${type}`);
-				return { status: exit_code };
-			} else
-				return { status: 255, error: 'illegal type' };
+		call: function() {
+			return { status: system(`${HP_DIR}/scripts/update_resources.sh`) };
 		}
 	}
 };

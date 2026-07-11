@@ -65,7 +65,7 @@ function renderStatus(isRunning, version, currentNode) {
 		renderHTML = spanTemp.format(statusColor, _('HomeProxy'), version, _('NOT RUNNING'));
 
 	if (currentNode)
-		renderHTML += '<div><em><span style="color:%s"><strong>%s</strong></span></em></div>'.format(nodeColor, currentNode);
+		renderHTML += '<div><em><span style="color:%s"><strong>%s</strong></span></em></div>'.format(nodeColor, '%h'.format(currentNode));
 
 	return renderHTML;
 }
@@ -101,12 +101,13 @@ return view.extend({
 		/* Cache all configured proxy nodes, they will be called multiple times */
 		let proxy_nodes = {};
 		uci.sections(data[0], 'node', (res) => {
-			let nodeaddr = ((res.type === 'direct') ? res.override_address : res.address) || '',
-			    nodeport = ((res.type === 'direct') ? res.override_port : res.port) || '';
+			let nodeaddr = res.address || '',
+			    nodeport = res.port || '',
+			    endpoint = nodeaddr && nodeport ? ((stubValidator.apply('ip6addr', nodeaddr) ?
+				String.format('[%s]', nodeaddr) : nodeaddr) + ':' + nodeport) : res['.name'];
 
 			proxy_nodes[res['.name']] =
-				String.format('[%s] %s', res.type, res.label || ((stubValidator.apply('ip6addr', nodeaddr) ?
-					String.format('[%s]', nodeaddr) : nodeaddr) + ':' + nodeport));
+				String.format('[%s] %s', res.type, res.label || endpoint);
 		});
 
 		m = new form.Map('homeproxy', _('HomeProxy'),
@@ -347,13 +348,6 @@ return view.extend({
 			else if (value === 'system')
 				desc.innerHTML = _('Less compatibility and sometimes better performance.');
 		}
-
-		so = ss.option(form.Flag, 'endpoint_independent_nat', _('Enable endpoint-independent NAT'),
-			_('Performance may degrade slightly, so it is not recommended to enable on when it is not needed.'));
-		so.default = so.enabled;
-		so.depends('tcpip_stack', 'mixed');
-		so.depends('tcpip_stack', 'gvisor');
-		so.rmempty = false;
 
 		so = ss.option(form.Value, 'udp_timeout', _('UDP NAT expiration time'),
 			_('In seconds.'));
@@ -1410,6 +1404,7 @@ return view.extend({
 
 			return this.super('load', section_id);
 		}
+		so.default = 'direct-out';
 		so.depends('type', 'remote');
 
 		so = ss.option(form.Value, 'update_interval', _('Update interval'),

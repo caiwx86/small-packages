@@ -14,7 +14,7 @@ import { cursor } from 'uci';
 
 import {
 	isEmpty, parseURL, strToBool, strToInt, strToTime,
-	removeBlankAttrs, validation, HP_DIR, RUN_DIR
+	removeBlankAttrs, renderEndpoint, renderOutbound, validation, HP_DIR, RUN_DIR
 } from 'homeproxy';
 
 const ubus = connect();
@@ -117,8 +117,7 @@ const proxy_mode = uci.get(uciconfig, ucimain, 'proxy_mode') || 'redirect_tproxy
 const mixed_port = uci.get(uciconfig, uciinfra, 'mixed_port') || '5330';
 
 let self_mark, redirect_port, tproxy_port, tun_name,
-    tun_addr4, tun_addr6, tun_mtu, tcpip_stack,
-    endpoint_independent_nat, udp_timeout;
+    tun_addr4, tun_addr6, tun_mtu, tcpip_stack, udp_timeout;
 
 if (routing_mode === 'custom')
 	udp_timeout = uci.get(uciconfig, uciroutingsetting, 'udp_timeout');
@@ -140,7 +139,6 @@ if (match(proxy_mode, /tun/)) {
 	tcpip_stack = 'system';
 	if (routing_mode === 'custom') {
 		tcpip_stack = uci.get(uciconfig, uciroutingsetting, 'tcpip_stack') || 'system';
-		endpoint_independent_nat = uci.get(uciconfig, uciroutingsetting, 'endpoint_independent_nat');
 	}
 }
 
@@ -198,168 +196,10 @@ function filter_existing_nodes(nodes) {
 	});
 }
 
-function generate_endpoint(node) {
-	if (type(node) !== 'object' || isEmpty(node))
-		return null;
-
-	const endpoint = {
-		type: node.type,
-		tag: 'cfg-' + node['.name'] + '-out',
-		address: node.wireguard_local_address,
-		mtu: strToInt(node.wireguard_mtu),
-		private_key: node.wireguard_private_key,
-		peers: (node.type === 'wireguard') ? [
-			{
-				address: node.address,
-				port: strToInt(node.port),
-				allowed_ips: [
-					'0.0.0.0/0',
-					'::/0'
-				],
-				persistent_keepalive_interval: strToInt(node.wireguard_persistent_keepalive_interval),
-				public_key: node.wireguard_peer_public_key,
-				pre_shared_key: node.wireguard_pre_shared_key,
-				reserved: parse_port(node.wireguard_reserved),
-			}
-		] : null,
-		system: (node.type === 'wireguard') ? false : null,
-		tcp_fast_open: strToBool(node.tcp_fast_open),
-		tcp_multi_path: strToBool(node.tcp_multi_path),
-		udp_fragment: strToBool(node.udp_fragment)
-	};
-
-	return endpoint;
-}
+const generate_endpoint = renderEndpoint;
 
 function generate_outbound(node) {
-	if (type(node) !== 'object' || isEmpty(node))
-		return null;
-
-	const tls_utls_value = (node.type === 'anytls' && isEmpty(node.tls_utls)) ? 'chrome' : node.tls_utls;
-	const outbound = {
-		type: node.type,
-		tag: 'cfg-' + node['.name'] + '-out',
-		routing_mark: strToInt(self_mark),
-
-		server: node.address,
-		server_port: strToInt(node.port),
-		/* Hysteria(2) */
-		server_ports: node.hysteria_hopping_port,
-
-		username: (node.type !== 'ssh') ? node.username : null,
-		user: (node.type === 'ssh') ? node.username : null,
-		password: node.password,
-
-		/* Direct */
-		override_address: node.override_address,
-		override_port: strToInt(node.override_port),
-		proxy_protocol: strToInt(node.proxy_protocol),
-		/* AnyTLS */
-		idle_session_check_interval: strToTime(node.anytls_idle_session_check_interval),
-		idle_session_timeout: strToTime(node.anytls_idle_session_timeout),
-		min_idle_session: strToInt(node.anytls_min_idle_session),
-		/* Hysteria (2) */
-		hop_interval: strToTime(node.hysteria_hop_interval),
-		up_mbps: strToInt(node.hysteria_up_mbps),
-		down_mbps: strToInt(node.hysteria_down_mbps),
-		obfs: node.hysteria_obfs_type ? {
-			type: node.hysteria_obfs_type,
-			password: node.hysteria_obfs_password
-		} : node.hysteria_obfs_password,
-		auth: (node.hysteria_auth_type === 'base64') ? node.hysteria_auth_payload : null,
-		auth_str: (node.hysteria_auth_type === 'string') ? node.hysteria_auth_payload : null,
-		recv_window_conn: strToInt(node.hysteria_recv_window_conn),
-		recv_window: strToInt(node.hysteria_revc_window),
-		disable_mtu_discovery: strToBool(node.hysteria_disable_mtu_discovery),
-		/* Shadowsocks */
-		method: node.shadowsocks_encrypt_method,
-		plugin: node.shadowsocks_plugin,
-		plugin_opts: node.shadowsocks_plugin_opts,
-		/* ShadowTLS / Socks */
-		version: (node.type === 'shadowtls') ? strToInt(node.shadowtls_version) : ((node.type === 'socks') ? node.socks_version : null),
-		/* SSH */
-		client_version: node.ssh_client_version,
-		host_key: node.ssh_host_key,
-		host_key_algorithms: node.ssh_host_key_algo,
-		private_key: node.ssh_priv_key,
-		private_key_passphrase: node.ssh_priv_key_pp,
-		/* Tuic */
-		uuid: node.uuid,
-		congestion_control: node.tuic_congestion_control,
-		udp_relay_mode: node.tuic_udp_relay_mode,
-		udp_over_stream: strToBool(node.tuic_udp_over_stream),
-		zero_rtt_handshake: strToBool(node.tuic_enable_zero_rtt),
-		heartbeat: strToTime(node.tuic_heartbeat),
-		/* VLESS / VMess */
-		flow: node.vless_flow,
-		alter_id: strToInt(node.vmess_alterid),
-		security: node.vmess_encrypt,
-		global_padding: strToBool(node.vmess_global_padding),
-		authenticated_length: strToBool(node.vmess_authenticated_length),
-		packet_encoding: node.packet_encoding,
-
-		multiplex: (node.multiplex === '1') ? {
-			enabled: true,
-			protocol: node.multiplex_protocol,
-			max_connections: strToInt(node.multiplex_max_connections),
-			min_streams: strToInt(node.multiplex_min_streams),
-			max_streams: strToInt(node.multiplex_max_streams),
-			padding: strToBool(node.multiplex_padding),
-			brutal: (node.multiplex_brutal === '1') ? {
-				enabled: true,
-				up_mbps: strToInt(node.multiplex_brutal_up),
-				down_mbps: strToInt(node.multiplex_brutal_down)
-			} : null
-		} : null,
-		tls: (node.tls === '1') ? {
-			enabled: true,
-			server_name: node.tls_sni,
-			insecure: strToBool(node.tls_insecure),
-			alpn: node.tls_alpn,
-			min_version: node.tls_min_version,
-			max_version: node.tls_max_version,
-			cipher_suites: node.tls_cipher_suites,
-			certificate_path: node.tls_cert_path,
-			ech: (node.tls_ech === '1') ? {
-				enabled: true,
-				config: node.tls_ech_config,
-				config_path: node.tls_ech_config_path
-			} : null,
-			utls: !isEmpty(tls_utls_value) ? {
-				enabled: true,
-				fingerprint: tls_utls_value
-			} : null,
-			reality: (node.tls_reality === '1') ? {
-				enabled: true,
-				public_key: node.tls_reality_public_key,
-				short_id: node.tls_reality_short_id
-			} : null
-		} : null,
-		transport: !isEmpty(node.transport) ? {
-			type: node.transport,
-			host: node.http_host || node.httpupgrade_host,
-			path: node.http_path || node.ws_path,
-			headers: node.ws_host ? {
-				Host: node.ws_host
-			} : null,
-			method: node.http_method,
-			max_early_data: strToInt(node.websocket_early_data),
-			early_data_header_name: node.websocket_early_data_header,
-			service_name: node.grpc_servicename,
-			idle_timeout: strToTime(node.http_idle_timeout),
-			ping_timeout: strToTime(node.http_ping_timeout),
-			permit_without_stream: strToBool(node.grpc_permit_without_stream)
-		} : null,
-		udp_over_tcp: (node.udp_over_tcp === '1') ? {
-			enabled: true,
-			version: strToInt(node.udp_over_tcp_version)
-		} : null,
-		tcp_fast_open: strToBool(node.tcp_fast_open),
-		tcp_multi_path: strToBool(node.tcp_multi_path),
-		udp_fragment: strToBool(node.udp_fragment)
-	};
-
-	return outbound;
+	return renderOutbound(node, self_mark);
 }
 
 function get_outbound(cfg) {
@@ -586,7 +426,6 @@ if (!isEmpty(main_node)) {
 			rule_set_ip_cidr_match_source: strToBool(cfg.rule_set_ip_cidr_match_source),
 			rule_set_ip_cidr_accept_empty: strToBool(cfg.rule_set_ip_cidr_accept_empty),
 			invert: strToBool(cfg.invert),
-			outbound: get_outbound(cfg.outbound),
 			action: cfg.action,
 			server: get_resolver(cfg.server),
 			strategy: cfg.domain_strategy,
@@ -655,7 +494,6 @@ if (match(proxy_mode, /tun/))
 		address: (ipv6_support === '1') ? [tun_addr4, tun_addr6] : [tun_addr4],
 		mtu: strToInt(tun_mtu),
 		auto_route: false,
-		endpoint_independent_nat: strToBool(endpoint_independent_nat),
 		udp_timeout: strToTime(udp_timeout),
 		stack: tcpip_stack
 	});
@@ -865,7 +703,6 @@ config.route = {
 if (!isEmpty(main_node)) {
 	/* Avoid DNS loop */
 	config.route.default_domain_resolver = {
-		action: 'route',
 		server: (routing_mode === 'bypass_mainland_china') ? 'china-dns' : 'default-dns',
 		strategy: (ipv6_support !== '1') ? 'prefer_ipv4' : null
 	};
@@ -919,21 +756,21 @@ if (!isEmpty(main_node)) {
 			tag: 'geoip-cn',
 			format: 'binary',
 			url: 'https://fastly.jsdelivr.net/gh/1715173329/IPCIDR-CHINA@rule-set/cn.srs',
-			download_detour: 'main-out'
+			download_detour: 'direct-out'
 		});
 		push(config.route.rule_set, {
 			type: 'remote',
 			tag: 'geosite-cn',
 			format: 'binary',
 			url: 'https://fastly.jsdelivr.net/gh/1715173329/sing-geosite@rule-set-unstable/geosite-geolocation-cn.srs',
-			download_detour: 'main-out'
+			download_detour: 'direct-out'
 		});
 		push(config.route.rule_set, {
 			type: 'remote',
 			tag: 'geosite-noncn',
 			format: 'binary',
 			url: 'https://fastly.jsdelivr.net/gh/1715173329/sing-geosite@rule-set-unstable/geosite-geolocation-!cn.srs',
-			download_detour: 'main-out'
+			download_detour: 'direct-out'
 		});
 	}
 
@@ -941,7 +778,6 @@ if (!isEmpty(main_node)) {
 		config.route.rule_set = null;
 } else if (!isEmpty(default_outbound)) {
 	config.route.default_domain_resolver = {
-		action: 'resolve',
 		server: get_resolver(default_outbound_dns)
 	};
 
@@ -1004,7 +840,7 @@ if (!isEmpty(main_node)) {
 			format: cfg.format,
 			path: cfg.path,
 			url: cfg.url,
-			download_detour: get_outbound(cfg.outbound),
+			download_detour: get_outbound(cfg.outbound) || ((cfg.type === 'remote') ? 'direct-out' : null),
 			update_interval: cfg.update_interval
 		});
 	});
@@ -1019,7 +855,7 @@ if (routing_mode in ['bypass_mainland_china', 'custom']) {
 		},
 		cache_file: {
 			enabled: true,
-			path: RUN_DIR + '/cache.db',
+			path: HP_DIR + '/cache/cache.db',
 			store_rdrc: strToBool(cache_file_store_rdrc),
 			rdrc_timeout: strToTime(cache_file_rdrc_timeout),
 		}
@@ -1028,4 +864,5 @@ if (routing_mode in ['bypass_mainland_china', 'custom']) {
 /* Experimental end */
 
 system('mkdir -p ' + RUN_DIR);
-writefile(RUN_DIR + '/sing-box-c.json', sprintf('%.J\n', removeBlankAttrs(config)));
+if (!writefile(RUN_DIR + '/sing-box-c.json.new', sprintf('%.J\n', removeBlankAttrs(config))))
+	exit(1);

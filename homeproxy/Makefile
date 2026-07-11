@@ -10,12 +10,18 @@ LUCI_DEPENDS:= \
 	+sing-box \
 	+firewall4 \
 	+kmod-nft-tproxy \
+	+curl \
+	+jsonfilter \
 	+ucode-mod-digest
 
 PKG_NAME:=luci-app-homeproxy
+PKG_VERSION=$(PKG_SRC_VERSION)
+PKG_RELEASE:=5
+PKG_PO_VERSION=$(PKG_SRC_VERSION)-r$(PKG_RELEASE)
 
 define Package/luci-app-homeproxy/conffiles
 /etc/config/homeproxy
+/etc/homeproxy/cache/
 /etc/homeproxy/certs/
 /etc/homeproxy/ruleset/
 /etc/homeproxy/resources/direct_list.txt

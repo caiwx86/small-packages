@@ -95,6 +95,161 @@ export function strToTime(str) {
 	return !isEmpty(str) ? (str + 's') : null;
 };
 
+function strListToInts(value) {
+	if (type(value) !== 'array' || isEmpty(value))
+		return null;
+
+	return map(value, (item) => int(item));
+};
+
+export function renderEndpoint(node) {
+	if (type(node) !== 'object' || isEmpty(node))
+		return null;
+
+	return {
+		type: node.type,
+		tag: 'cfg-' + node['.name'] + '-out',
+		address: node.wireguard_local_address,
+		mtu: strToInt(node.wireguard_mtu),
+		private_key: node.wireguard_private_key,
+		peers: (node.type === 'wireguard') ? [
+			{
+				address: node.address,
+				port: strToInt(node.port),
+				allowed_ips: [
+					'0.0.0.0/0',
+					'::/0'
+				],
+				persistent_keepalive_interval: strToInt(node.wireguard_persistent_keepalive_interval),
+				public_key: node.wireguard_peer_public_key,
+				pre_shared_key: node.wireguard_pre_shared_key,
+				reserved: strListToInts(node.wireguard_reserved)
+			}
+		] : null,
+		system: (node.type === 'wireguard') ? false : null,
+		tcp_fast_open: strToBool(node.tcp_fast_open),
+		tcp_multi_path: strToBool(node.tcp_multi_path),
+		udp_fragment: strToBool(node.udp_fragment)
+	};
+};
+
+export function renderOutbound(node, routingMark) {
+	if (type(node) !== 'object' || isEmpty(node))
+		return null;
+
+	const tls_utls_value = (node.type === 'anytls' && isEmpty(node.tls_utls)) ? 'chrome' : node.tls_utls;
+	return {
+		type: node.type,
+		tag: 'cfg-' + node['.name'] + '-out',
+		routing_mark: strToInt(routingMark),
+
+		server: node.address,
+		server_port: strToInt(node.port),
+		server_ports: node.hysteria_hopping_port,
+
+		username: (node.type !== 'ssh') ? node.username : null,
+		user: (node.type === 'ssh') ? node.username : null,
+		password: node.password,
+
+		idle_session_check_interval: strToTime(node.anytls_idle_session_check_interval),
+		idle_session_timeout: strToTime(node.anytls_idle_session_timeout),
+		min_idle_session: strToInt(node.anytls_min_idle_session),
+		hop_interval: strToTime(node.hysteria_hop_interval),
+		up_mbps: strToInt(node.hysteria_up_mbps),
+		down_mbps: strToInt(node.hysteria_down_mbps),
+		obfs: node.hysteria_obfs_type ? {
+			type: node.hysteria_obfs_type,
+			password: node.hysteria_obfs_password
+		} : node.hysteria_obfs_password,
+		auth: (node.hysteria_auth_type === 'base64') ? node.hysteria_auth_payload : null,
+		auth_str: (node.hysteria_auth_type === 'string') ? node.hysteria_auth_payload : null,
+		recv_window_conn: strToInt(node.hysteria_recv_window_conn),
+		recv_window: strToInt(node.hysteria_revc_window),
+		disable_mtu_discovery: strToBool(node.hysteria_disable_mtu_discovery),
+		method: node.shadowsocks_encrypt_method,
+		plugin: node.shadowsocks_plugin,
+		plugin_opts: node.shadowsocks_plugin_opts,
+		version: (node.type === 'shadowtls') ? strToInt(node.shadowtls_version) : ((node.type === 'socks') ? node.socks_version : null),
+		client_version: node.ssh_client_version,
+		host_key: node.ssh_host_key,
+		host_key_algorithms: node.ssh_host_key_algo,
+		private_key: node.ssh_priv_key,
+		private_key_passphrase: node.ssh_priv_key_pp,
+		uuid: node.uuid,
+		congestion_control: node.tuic_congestion_control,
+		udp_relay_mode: node.tuic_udp_relay_mode,
+		udp_over_stream: strToBool(node.tuic_udp_over_stream),
+		zero_rtt_handshake: strToBool(node.tuic_enable_zero_rtt),
+		heartbeat: strToTime(node.tuic_heartbeat),
+		flow: node.vless_flow,
+		alter_id: strToInt(node.vmess_alterid),
+		security: node.vmess_encrypt,
+		global_padding: strToBool(node.vmess_global_padding),
+		authenticated_length: strToBool(node.vmess_authenticated_length),
+		packet_encoding: node.packet_encoding,
+
+		multiplex: (node.multiplex === '1') ? {
+			enabled: true,
+			protocol: node.multiplex_protocol,
+			max_connections: strToInt(node.multiplex_max_connections),
+			min_streams: strToInt(node.multiplex_min_streams),
+			max_streams: strToInt(node.multiplex_max_streams),
+			padding: strToBool(node.multiplex_padding),
+			brutal: (node.multiplex_brutal === '1') ? {
+				enabled: true,
+				up_mbps: strToInt(node.multiplex_brutal_up),
+				down_mbps: strToInt(node.multiplex_brutal_down)
+			} : null
+		} : null,
+		tls: (node.tls === '1') ? {
+			enabled: true,
+			server_name: node.tls_sni,
+			insecure: strToBool(node.tls_insecure),
+			alpn: node.tls_alpn,
+			min_version: node.tls_min_version,
+			max_version: node.tls_max_version,
+			cipher_suites: node.tls_cipher_suites,
+			certificate_path: node.tls_cert_path,
+			ech: (node.tls_ech === '1') ? {
+				enabled: true,
+				config: node.tls_ech_config,
+				config_path: node.tls_ech_config_path
+			} : null,
+			utls: !isEmpty(tls_utls_value) ? {
+				enabled: true,
+				fingerprint: tls_utls_value
+			} : null,
+			reality: (node.tls_reality === '1') ? {
+				enabled: true,
+				public_key: node.tls_reality_public_key,
+				short_id: node.tls_reality_short_id
+			} : null
+		} : null,
+		transport: !isEmpty(node.transport) ? {
+			type: node.transport,
+			host: node.http_host || node.httpupgrade_host,
+			path: node.http_path || node.ws_path,
+			headers: node.ws_host ? {
+				Host: node.ws_host
+			} : null,
+			method: node.http_method,
+			max_early_data: strToInt(node.websocket_early_data),
+			early_data_header_name: node.websocket_early_data_header,
+			service_name: node.grpc_servicename,
+			idle_timeout: strToTime(node.http_idle_timeout),
+			ping_timeout: strToTime(node.http_ping_timeout),
+			permit_without_stream: strToBool(node.grpc_permit_without_stream)
+		} : null,
+		udp_over_tcp: (node.udp_over_tcp === '1') ? {
+			enabled: true,
+			version: strToInt(node.udp_over_tcp_version)
+		} : null,
+		tcp_fast_open: strToBool(node.tcp_fast_open),
+		tcp_multi_path: strToBool(node.tcp_multi_path),
+		udp_fragment: strToBool(node.udp_fragment)
+	};
+};
+
 export function removeBlankAttrs(res) {
 	let content;
 

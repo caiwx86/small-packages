@@ -14,6 +14,8 @@ PROG="/usr/bin/sing-box"
 HP_DIR="/etc/homeproxy"
 RUN_DIR="/var/run/homeproxy"
 LOG_PATH="$RUN_DIR/homeproxy.log"
+CACHE_DIR="$HP_DIR/cache"
+CACHE_PATH="$CACHE_DIR/cache.db"
 
 # we don't know which is the default server, just take the first one
 DNSMASQ_UCI_CONFIG="$(uci -q show "dhcp.@dnsmasq[0]" | awk 'NR==1 {split($0, conf, /[.=]/); print conf[2]}')"
@@ -25,6 +27,23 @@ fi
 
 log() {
 	echo -e "$(date "+%Y-%m-%d %H:%M:%S") [DAEMON] $*" >> "$LOG_PATH"
+}
+
+validate_cron() {
+	local expression="$1" field
+
+	case "$expression" in
+	""|*[!0-9*/?,\ -]*) return 1 ;;
+	esac
+
+	set -f
+	set -- $expression
+	set +f
+	[ "$#" -eq 5 ] || return 1
+
+	for field in "$@"; do
+		[ -n "$field" ] || return 1
+	done
 }
 
 start_service() {
@@ -49,26 +68,65 @@ start_service() {
 	fi
 
 	mkdir -p "$RUN_DIR"
+	rm -f "$RUN_DIR/sing-box-c.json.new" "$RUN_DIR/sing-box-s.json.new"
 
+	# Generate and validate every enabled instance before changing system state.
 	if [ "$outbound_node" != "nil" ]; then
-		# Generate/Validate client config
-		ucode -S "$HP_DIR/scripts/generate_client.uc" 2>>"$LOG_PATH"
-
-		if [ ! -e "$RUN_DIR/sing-box-c.json" ]; then
+		if ! ucode -S "$HP_DIR/scripts/generate_client.uc" 2>>"$LOG_PATH" || \
+		   [ ! -s "$RUN_DIR/sing-box-c.json.new" ]; then
 			log "Error: failed to generate client configuration."
+			rm -f "$RUN_DIR/sing-box-c.json.new" "$RUN_DIR/sing-box-s.json.new"
 			return 1
-		elif ! "$PROG" check --config "$RUN_DIR/sing-box-c.json" 2>>"$LOG_PATH"; then
+		elif ! "$PROG" check --config "$RUN_DIR/sing-box-c.json.new" 2>>"$LOG_PATH"; then
 			log "Error: wrong client configuration detected."
+			rm -f "$RUN_DIR/sing-box-c.json.new" "$RUN_DIR/sing-box-s.json.new"
 			return 1
 		fi
+	fi
 
+	if [ "$server_enabled" = "1" ]; then
+		if ! ucode -S "$HP_DIR/scripts/generate_server.uc" 2>>"$LOG_PATH" || \
+		   [ ! -s "$RUN_DIR/sing-box-s.json.new" ]; then
+			log "Error: failed to generate server configuration."
+			rm -f "$RUN_DIR/sing-box-c.json.new" "$RUN_DIR/sing-box-s.json.new"
+			return 1
+		elif ! "$PROG" check --config "$RUN_DIR/sing-box-s.json.new" 2>>"$LOG_PATH"; then
+			log "Error: wrong server configuration detected."
+			rm -f "$RUN_DIR/sing-box-c.json.new" "$RUN_DIR/sing-box-s.json.new"
+			return 1
+		fi
+	fi
+
+	if { [ "$outbound_node" = "nil" ] || mv -f "$RUN_DIR/sing-box-c.json.new" "$RUN_DIR/sing-box-c.json"; } && \
+	   { [ "$server_enabled" = "0" ] || mv -f "$RUN_DIR/sing-box-s.json.new" "$RUN_DIR/sing-box-s.json"; }; then
+		[ "$outbound_node" != "nil" ] || rm -f "$RUN_DIR/sing-box-c.json"
+		[ "$server_enabled" = "1" ] || rm -f "$RUN_DIR/sing-box-s.json"
+	else
+		log "Error: failed to install generated configuration."
+		rm -f "$RUN_DIR/sing-box-c.json.new" "$RUN_DIR/sing-box-s.json.new"
+		return 1
+	fi
+
+	case "$routing_mode" in
+	"bypass_mainland_china"|"custom")
+		mkdir -p "$CACHE_DIR"
+		touch "$CACHE_PATH"
+		chown -R sing-box:sing-box "$CACHE_DIR"
+		;;
+	esac
+
+	if [ "$outbound_node" != "nil" ]; then
 		# Auto update
 		local auto_update auto_update_time
 		config_get_bool auto_update "subscription" "auto_update" "0"
 		if [ "$auto_update" = "1" ]; then
 			config_get auto_update_time "subscription" "auto_update_time" "0 */6 * * *"
 			sed -i "/#${CONF}_autosetup/d" "/etc/crontabs/root" 2>"/dev/null"
-			echo -e "$auto_update_time $HP_DIR/scripts/update_crond.sh #${CONF}_autosetup" >> "/etc/crontabs/root"
+			if validate_cron "$auto_update_time"; then
+				printf '%s %s #%s_autosetup\n' "$auto_update_time" "$HP_DIR/scripts/update_crond.sh" "$CONF" >> "/etc/crontabs/root"
+			else
+				log "Error: invalid subscription update schedule."
+			fi
 			/etc/init.d/cron restart
 		fi
 
@@ -79,7 +137,29 @@ start_service() {
 		mkdir -p "$DNSMASQ_DIR"
 		echo -e "conf-dir=$DNSMASQ_DIR" > "$DNSMASQ_DIR/../dnsmasq-homeproxy.conf"
 		case "$routing_mode" in
-		"bypass_mainland_china"|"custom"|"global")
+		"bypass_mainland_china")
+			cat <<-EOF >> "$DNSMASQ_DIR/redirect-dns.conf"
+				no-poll
+				no-resolv
+				server=127.0.0.1#$dns_port
+			EOF
+
+			local wan_interface wan_dns china_dns candidate
+			. /lib/functions/network.sh
+			if network_find_wan wan_interface && network_get_dnsserver wan_dns "$wan_interface"; then
+				for candidate in $wan_dns; do
+					case "$candidate" in
+					*:*) ;;
+					*) china_dns="$candidate"; break ;;
+					esac
+				done
+				[ -n "$china_dns" ] || china_dns="${wan_dns%% *}"
+			fi
+			china_dns="${china_dns:-223.5.5.5}"
+			sed -r -e '/^\s*$/d' -e "s|(.*)|server=/\1/$china_dns|g" \
+				"$HP_DIR/resources/china_list.txt" > "$DNSMASQ_DIR/china_list.conf"
+			;;
+		"custom"|"global")
 			cat <<-EOF >> "$DNSMASQ_DIR/redirect-dns.conf"
 				no-poll
 				no-resolv
@@ -156,7 +236,7 @@ start_service() {
 			procd_add_jail "sing-box-c" log procfs
 			procd_add_jail_mount "$RUN_DIR/sing-box-c.json"
 			procd_add_jail_mount_rw "$RUN_DIR/sing-box-c.log"
-			[ "$routing_mode" != "bypass_mainland_china" ] || procd_add_jail_mount_rw "$RUN_DIR/cache.db"
+			[ "$routing_mode" != "bypass_mainland_china" ] || procd_add_jail_mount_rw "$CACHE_PATH"
 			procd_add_jail_mount "$HP_DIR/certs/"
 			procd_add_jail_mount "/etc/ssl/"
 			procd_add_jail_mount "/etc/localtime"
@@ -176,17 +256,6 @@ start_service() {
 	fi
 
 	if [ "$server_enabled" = "1" ]; then
-		# Generate/Validate server config
-		ucode -S "$HP_DIR/scripts/generate_server.uc" 2>>"$LOG_PATH"
-
-		if [ ! -e "$RUN_DIR/sing-box-s.json" ]; then
-			log "Error: failed to generate server configuration."
-			return 1
-		elif ! "$PROG" check --config "$RUN_DIR/sing-box-s.json" 2>>"$LOG_PATH"; then
-			log "Error: wrong server configuration detected."
-			return 1
-		fi
-
 		# sing-box (server)
 		procd_open_instance "sing-box-s"
 
@@ -226,10 +295,6 @@ start_service() {
 	procd_close_instance
 
 	case "$routing_mode" in
-	"bypass_mainland_china")
-		# Prepare cache db
-		[ -e "$RUN_DIR/cache.db" ] || touch "$RUN_DIR/cache.db"
-		;;
 	"custom")
 		# Prepare ruleset directory
 		[ -d "$HP_DIR/ruleset" ] || mkdir -p "$HP_DIR/ruleset"
@@ -308,8 +373,8 @@ stop_service() {
 	rm -rf "$DNSMASQ_DIR/../dnsmasq-homeproxy.conf" "$DNSMASQ_DIR"
 	/etc/init.d/dnsmasq restart >"/dev/null" 2>&1
 
-	rm -f "$RUN_DIR/sing-box-c.json" "$RUN_DIR/sing-box-c.log" \
-		"$RUN_DIR/sing-box-s.json" "$RUN_DIR/sing-box-s.log"
+	rm -f "$RUN_DIR/sing-box-c.json" "$RUN_DIR/sing-box-c.json.new" "$RUN_DIR/sing-box-c.log" \
+		"$RUN_DIR/sing-box-s.json" "$RUN_DIR/sing-box-s.json.new" "$RUN_DIR/sing-box-s.log"
 
 	log "Service stopped."
 }
