@@ -19,10 +19,6 @@ log() {
 	printf '%s %s\n' "$(date "+%Y-%m-%d %H:%M:%S")" "$*" >> "$LOG_PATH"
 }
 
-to_upper() {
-	printf '%s\n' "$1" | tr '[:lower:]' '[:upper:]'
-}
-
 download() {
 	local source_file="$1"
 	local target_file="$2"
@@ -55,10 +51,10 @@ CURRENT=1
 for RESOURCE in china_ip4 china_ip6 china_list gfw_list; do
 	OLD_VER="$(cat "$RESOURCES_DIR/$RESOURCE.ver" 2>/dev/null || echo "NOT FOUND")"
 	if [ "$OLD_VER" = "$NEW_VER" ]; then
-		log "[$(to_upper "$RESOURCE")] Current version: $NEW_VER."
+		log "[$RESOURCE] Current version: $NEW_VER."
 	else
 		CURRENT=0
-		log "[$(to_upper "$RESOURCE")] Local version: $OLD_VER, latest version: $NEW_VER."
+		log "[$RESOURCE] Local version: $OLD_VER, latest version: $NEW_VER."
 	fi
 done
 [ "$CURRENT" -eq 0 ] || {
@@ -88,7 +84,7 @@ fi
 
 for RESOURCE in china_ip4 china_ip6 china_list gfw_list; do
 	if [ ! -s "$TMP_DIR/$RESOURCE.txt" ] || grep -qi '<html' "$TMP_DIR/$RESOURCE.txt"; then
-		log "[$(to_upper "$RESOURCE")] Update failed: invalid processed list."
+		log "[$RESOURCE] Update failed: invalid processed list."
 		exit 1
 	fi
 	printf '%s\n' "$NEW_VER" > "$TMP_DIR/$RESOURCE.ver" || exit 1
@@ -97,10 +93,10 @@ done
 for RESOURCE in china_ip4 china_ip6 china_list gfw_list; do
 	if ! mv -f "$TMP_DIR/$RESOURCE.txt" "$RESOURCES_DIR/$RESOURCE.txt" || \
 	   ! mv -f "$TMP_DIR/$RESOURCE.ver" "$RESOURCES_DIR/$RESOURCE.ver"; then
-		log "[$(to_upper "$RESOURCE")] Update failed: unable to replace list."
+		log "[$RESOURCE] Update failed: unable to replace list."
 		exit 1
 	fi
-	log "[$(to_upper "$RESOURCE")] Successfully updated."
+	log "[$RESOURCE] Successfully updated."
 done
 
 exit 0

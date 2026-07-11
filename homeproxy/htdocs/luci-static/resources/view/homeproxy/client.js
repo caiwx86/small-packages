@@ -38,6 +38,22 @@ const callWriteDomainList = rpc.declare({
 	expect: { '': {} }
 });
 
+function normalizeDomainList(value) {
+	value = (value || '').trim().replace(/\r\n?/g, '\n');
+	return value ? value + '\n' : '';
+}
+
+function writeDomainList(type, checksumOption, value) {
+	const content = normalizeDomainList(value);
+	uci.set('homeproxy', 'control', checksumOption, hp.calcStringMD5(content));
+
+	return callWriteDomainList(type, content).then((result) => {
+		if (!result.result)
+			throw new Error(_('Failed to save domain list.'));
+		return result;
+	});
+}
+
 const callCurrentNode = rpc.declare({
 	object: 'luci.homeproxy',
 	method: 'current_node_get',
@@ -1509,14 +1525,14 @@ return view.extend({
 				return res.content;
 			}, {});
 		}
-		so.write = function(_section_id, value) {
-			return callWriteDomainList('proxy_list', value);
-		}
-		so.remove = function(/* ... */) {
-			let routing_mode = this.section.formvalue('config', 'routing_mode');
-			if (routing_mode !== 'custom')
-				return callWriteDomainList('proxy_list', '');
-			return true;
+			so.write = function(_section_id, value) {
+				return writeDomainList('proxy_list', 'proxy_domain_list_checksum', value);
+			}
+			so.remove = function(/* ... */) {
+				let routing_mode = this.section.formvalue('config', 'routing_mode');
+				if (routing_mode !== 'custom')
+					return writeDomainList('proxy_list', 'proxy_domain_list_checksum', '');
+				return true;
 		}
 		so.validate = function(section_id, value) {
 			if (section_id && value)
@@ -1541,14 +1557,14 @@ return view.extend({
 				return res.content;
 			}, {});
 		}
-		so.write = function(_section_id, value) {
-			return callWriteDomainList('direct_list', value);
-		}
-		so.remove = function(/* ... */) {
-			let routing_mode = this.section.formvalue('config', 'routing_mode');
-			if (routing_mode !== 'custom')
-				return callWriteDomainList('direct_list', '');
-			return true;
+			so.write = function(_section_id, value) {
+				return writeDomainList('direct_list', 'direct_domain_list_checksum', value);
+			}
+			so.remove = function(/* ... */) {
+				let routing_mode = this.section.formvalue('config', 'routing_mode');
+				if (routing_mode !== 'custom')
+					return writeDomainList('direct_list', 'direct_domain_list_checksum', '');
+				return true;
 		}
 		so.validate = function(section_id, value) {
 			if (section_id && value)

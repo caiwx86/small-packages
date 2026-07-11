@@ -50,7 +50,7 @@ const methods = {
 				return { result: false, error: 'illegal type' };
 
 			const file = `${HP_DIR}/resources/${req.args?.type}.txt`;
-			let content = req.args?.content;
+			let content = (type(req.args?.content) === 'string') ? req.args.content : '';
 
 			/* Sanitize content */
 			if (content) {
@@ -60,8 +60,16 @@ const methods = {
 					content += '\n';
 			}
 
-			system(`mkdir -p ${HP_DIR}/resources`);
-			writefile(file, content);
+			if (system(`mkdir -p ${HP_DIR}/resources`) !== 0)
+				return { result: false, error: 'failed to prepare resources directory' };
+
+			const tmpfile = file + '.tmp';
+			if (writefile(tmpfile, content) === null)
+				return { result: false, error: 'failed to write domain list' };
+			if (system(`mv -f ${tmpfile} ${file}`) !== 0) {
+				system(`rm -f ${tmpfile}`);
+				return { result: false, error: 'failed to replace domain list' };
+			}
 
 			return { result: true };
 		}
