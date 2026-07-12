@@ -89,11 +89,11 @@ function getConnectionStatus() {
 
 		if (result?.result) {
 			elements.state.style.setProperty('color', 'green');
-			dom.content(elements.state, _('Connected'));
-			dom.content(elements.latency, _('%d ms').format(result.latency_ms));
+			dom.content(elements.state, _('Success'));
+			dom.content(elements.latency, _('%s ms').format(result.latency_ms));
 		} else {
 			elements.state.style.setProperty('color', 'red');
-			dom.content(elements.state, result?.timed_out ? _('Timed out') : _('Disconnected'));
+			dom.content(elements.state, result?.timed_out ? _('Timed out') : _('Failed'));
 			dom.content(elements.latency, '-');
 		}
 	};

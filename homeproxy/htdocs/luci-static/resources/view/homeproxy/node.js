@@ -1049,7 +1049,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode, no
 	o.modalonly = true;
 
 	o = s.option(form.ListValue, 'shadowsocks_plugin', _('Plugin'));
-	o.value('', _('none'));
+	o.value('', _('None'));
 	o.value('obfs-local');
 	o.value('v2ray-plugin');
 	o.depends('type', 'shadowsocks');
@@ -1305,9 +1305,9 @@ function renderNodeSettings(section, data, features, main_node, routing_mode, no
 	/* WebSocket config end */
 
 	o = s.option(form.ListValue, 'packet_encoding', _('Packet encoding'));
-	o.value('', _('none'));
+	o.value('', _('None'));
 	o.value('packetaddr', _('packet addr (v2ray-core v5+)'));
-	o.value('xudp', _('Xudp (Xray-core)'));
+	o.value('xudp', _('XUDP (Xray-core)'));
 	o.depends('type', 'vless');
 	o.depends('type', 'vmess');
 	o.modalonly = true;
@@ -1329,7 +1329,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode, no
 	o.rmempty = false;
 	o.modalonly = true;
 
-	o = s.option(form.Value, 'wireguard_peer_public_key', _('Peer pubkic key'),
+	o = s.option(form.Value, 'wireguard_peer_public_key', _('Peer public key'),
 		_('WireGuard peer public key.'));
 	o.depends('type', 'wireguard');
 	o.validate = L.bind(hp.validateBase64Key, this, 44);
@@ -1468,7 +1468,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode, no
 
 	o = s.option(form.ListValue, 'tls_min_version', _('Minimum TLS version'),
 		_('The minimum TLS version that is acceptable.'));
-	o.value('', _('default'));
+	o.value('', _('Default'));
 	for (let i of hp.tls_versions)
 		o.value(i);
 	o.depends('tls', '1');
@@ -1476,7 +1476,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode, no
 
 	o = s.option(form.ListValue, 'tls_max_version', _('Maximum TLS version'),
 		_('The maximum TLS version that is acceptable.'));
-	o.value('', _('default'));
+	o.value('', _('Default'));
 	for (let i of hp.tls_versions)
 		o.value(i);
 	o.depends('tls', '1');
@@ -1757,7 +1757,7 @@ return view.extend({
 		s.tab('subscription', _('Subscriptions'));
 
 		o = s.taboption('subscription', form.Flag, 'auto_update', _('Auto update'),
-			_('Auto update subscriptions and geodata.'));
+			_('Auto update subscriptions and resources.'));
 		o.rmempty = false;
 
 		o = s.taboption('subscription', form.Value, 'auto_update_time', _('Cron expression'),
@@ -1777,7 +1777,7 @@ return view.extend({
 		o.default = 'icmp';
 		o.rmempty = false;
 
-		o = s.taboption('subscription', form.DynamicList, 'subscription_url', _('Subscription URL-s'),
+		o = s.taboption('subscription', form.DynamicList, 'subscription_url', _('Subscription URLs'),
 			_('Support Hysteria, Shadowsocks, Trojan, v2rayN (VMess), and XTLS (VLESS) online configuration delivery standard.'));
 		o.validate = function(section_id, value) {
 			if (section_id && value) {
@@ -1811,16 +1811,16 @@ return view.extend({
 		o.placeholder = 'Wget/1.21 (HomeProxy, like v2rayN)';
 
 		o = s.taboption('subscription', form.Flag, 'allow_insecure', _('Allow insecure'),
-			_('Allow insecure connection by default when add nodes from subscriptions.') +
+			_('Allow insecure connection by default when adding nodes from subscriptions.') +
 			'<br/>' +
 			_('This is <strong>DANGEROUS</strong>, your traffic is almost like <strong>PLAIN TEXT</strong>! Use at your own risk!'));
 		o.rmempty = false;
 		o.onchange = allowInsecureConfirm;
 
 		o = s.taboption('subscription', form.ListValue, 'packet_encoding', _('Default packet encoding'));
-		o.value('', _('none'));
+		o.value('', _('None'));
 		o.value('packetaddr', _('packet addr (v2ray-core v5+)'));
-		o.value('xudp', _('Xudp (Xray-core)'));
+		o.value('xudp', _('XUDP (Xray-core)'));
 
 		o = s.taboption('subscription', form.Button, '_save_subscriptions', _('Save subscriptions settings'),
 			_('NOTE: Save current settings before updating subscriptions.'));

@@ -169,7 +169,7 @@ const methods = {
 				push(commands, sprintf(
 					'/usr/bin/curl --location --silent --output /dev/null --user-agent %s --connect-timeout 5 --max-time 9 --write-out %s %s',
 					shellquote('Mozilla/5.0'),
-					shellquote(sprintf('%s\\t%%{http_code}\\t%%{time_total}\\n', site)),
+					shellquote(sprintf('%s\\t%%{http_code}\\t%%{time_appconnect}\\t%%{time_total}\\n', site)),
 					shellquote(CONNECTION_SITES[site])
 				));
 			}
@@ -188,20 +188,25 @@ const methods = {
 			fd.close();
 
 			const responses = {};
+			const curlTimeMs = (value) => {
+				const parts = split(value || '0', '.');
+				const fraction = ((parts[1] || '') + '000');
+				return int(parts[0] || '0') * 1000 + int(substr(fraction, 0, 3));
+			};
+
 			for (let response in split(trim(payload), /[\r\n]+/)) {
 				const fields = split(response, '\t');
-				if (length(fields) !== 3 || !CONNECTION_SITES[fields[0]])
+				if (length(fields) !== 4 || !CONNECTION_SITES[fields[0]])
 					continue;
 
-				const time_parts = split(fields[2], '.');
-				const fraction = ((time_parts[1] || '') + '000');
-				const latency_ms = int(time_parts[0] || '0') * 1000 + int(substr(fraction, 0, 3));
+				const latency_ms = curlTimeMs(fields[2]);
+				const total_ms = curlTimeMs(fields[3]);
 				const http_code = int(fields[1] || '0');
 				responses[fields[0]] = {
 					site: fields[0],
 					result: http_code >= 100 && http_code <= 599,
 					latency_ms,
-					timed_out: http_code === 0 && latency_ms >= 8900
+					timed_out: http_code === 0 && total_ms >= 8900
 				};
 			}
 

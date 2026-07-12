@@ -221,7 +221,7 @@ return view.extend({
 		o = s.taboption('routing', form.Value, 'dns_server', _('DNS server'),
 			_('Support UDP, TCP, DoH, DoQ, DoT. TCP protocol will be used if not specified.'));
 		o.value('wan', _('WAN DNS (read from interface)'));
-		o.value('https://dns.cloudflare.com/dns-query', _('CloudFlare Public DNS (DoH)'));
+		o.value('https://dns.cloudflare.com/dns-query', _('Cloudflare Public DNS (DoH)'));
 		o.value('https://dns.google/dns-query', _('Google Public DNS (DoH)'));
 		o.value('https://dns.quad9.net/dns-query', _('Quad9 Public DNS (DoH)'));
 		o.value('https://dns.adguard-dns.com/dns-query', _('AdGuard Public DNS (DoH)'));
@@ -260,7 +260,7 @@ return view.extend({
 		o.value('wan', _('WAN DNS (read from interface)'));
 		o.value('https://doh-pure.onedns.net/dns-query', _('ThreatBook Public DNS (DoH)'));
 		o.value('https://doh.pub/dns-query', _('Tencent Public DNS (DoH)'));
-		o.value('https://dns.alidns.com/dns-query', _('AliYun Public DNS (DoH)'));
+		o.value('https://dns.alidns.com/dns-query', _('AliDNS Public DNS (DoH)'));
 		o.depends('routing_mode', 'bypass_mainland_china');
 		o.default = 'https://dns.alidns.com/dns-query';
 		o.rmempty = false;
@@ -313,7 +313,7 @@ return view.extend({
 					if (!stubValidator.apply('port', i) && !stubValidator.apply('portrange', i))
 						return _('Expecting: %s').format(_('valid port value'));
 					if (ports.includes(i))
-						return _('Port %s alrealy exists!').format(i);
+						return _('Port %s already exists!').format(i);
 					ports = ports.concat(i);
 				}
 			}
@@ -748,7 +748,7 @@ return view.extend({
 		so.modalonly = true;
 
 		so = ss.taboption('field_other', form.Value, 'udp_timeout', _('UDP timeout'),
-			_('Timeout for UDP connections.<br/>Setting a larger value than the UDP timeout in inbounds will have no effect.'));
+			_('Timeout for UDP connections.<br/>Setting a larger value than the inbound UDP timeout will have no effect.'));
 		so.datatype = 'uinteger';
 		so.depends('action', 'route');
 		so.depends('action', 'route-options');
@@ -830,7 +830,7 @@ return view.extend({
 		so.depends('action', 'resolve');
 		so.modalonly = true;
 
-		so = ss.taboption('field_host', form.DynamicList, 'domain', _('Domain name'),
+		so = ss.taboption('field_host', form.DynamicList, 'domain', _('Domains'),
 			_('Match full domain.'));
 		so.datatype = 'hostname';
 		so.modalonly = true;
@@ -1206,7 +1206,7 @@ return view.extend({
 		so.depends('action', 'route');
 		so.modalonly = true;
 
-		so = ss.taboption('field_other', form.Flag, 'dns_disable_cache', _('Disable dns cache'),
+		so = ss.taboption('field_other', form.Flag, 'dns_disable_cache', _('Disable DNS cache'),
 			_('Disable cache and save cache in this query.'));
 		so.depends('action', 'route');
 		so.depends('action', 'route-options');
@@ -1267,7 +1267,7 @@ return view.extend({
 		so.depends('action', 'predefined');
 		so.modalonly = true;
 
-		so = ss.taboption('field_host', form.DynamicList, 'domain', _('Domain name'),
+		so = ss.taboption('field_host', form.DynamicList, 'domain', _('Domains'),
 			_('Match full domain.'));
 		so.datatype = 'hostname';
 		so.modalonly = true;
@@ -1431,7 +1431,7 @@ return view.extend({
 		ss = o.subsection;
 
 		/* Interface control start */
-		ss.tab('interface', _('Interface Control'));
+		ss.tab('interface', _('Interface control'));
 
 		so = ss.taboption('interface', widgets.DeviceSelect, 'listen_interfaces', _('Listen interfaces'),
 			_('Only process traffic from specific interfaces. Leave empty for all.'));
@@ -1454,55 +1454,55 @@ return view.extend({
 		so.default = 'disabled';
 		so.rmempty = false;
 
-		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_direct_ipv4_ips', _('Direct IPv4 IP-s'), null, 'ipv4', hosts, true);
+		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_direct_ipv4_ips', _('Direct IPv4 addresses'), null, 'ipv4', hosts, true);
 		so.depends('lan_proxy_mode', 'except_listed');
 
-		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_direct_ipv6_ips', _('Direct IPv6 IP-s'), null, 'ipv6', hosts, true);
+		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_direct_ipv6_ips', _('Direct IPv6 addresses'), null, 'ipv6', hosts, true);
 		so.depends({'lan_proxy_mode': 'except_listed', 'homeproxy.config.ipv6_support': '1'});
 
-		so = fwtool.addMACOption(ss, 'lan_ip_policy', 'lan_direct_mac_addrs', _('Direct MAC-s'), null, hosts);
+		so = fwtool.addMACOption(ss, 'lan_ip_policy', 'lan_direct_mac_addrs', _('Direct MAC addresses'), null, hosts);
 		so.depends('lan_proxy_mode', 'except_listed');
 
-		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_proxy_ipv4_ips', _('Proxy IPv4 IP-s'), null, 'ipv4', hosts, true);
+		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_proxy_ipv4_ips', _('Proxy IPv4 addresses'), null, 'ipv4', hosts, true);
 		so.depends('lan_proxy_mode', 'listed_only');
 
-		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_proxy_ipv6_ips', _('Proxy IPv6 IP-s'), null, 'ipv6', hosts, true);
+		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_proxy_ipv6_ips', _('Proxy IPv6 addresses'), null, 'ipv6', hosts, true);
 		so.depends({'lan_proxy_mode': 'listed_only', 'homeproxy.config.ipv6_support': '1'});
 
-		so = fwtool.addMACOption(ss, 'lan_ip_policy', 'lan_proxy_mac_addrs', _('Proxy MAC-s'), null, hosts);
+		so = fwtool.addMACOption(ss, 'lan_ip_policy', 'lan_proxy_mac_addrs', _('Proxy MAC addresses'), null, hosts);
 		so.depends('lan_proxy_mode', 'listed_only');
 
-		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_gaming_mode_ipv4_ips', _('Gaming mode IPv4 IP-s'), null, 'ipv4', hosts, true);
+		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_gaming_mode_ipv4_ips', _('Gaming mode IPv4 addresses'), null, 'ipv4', hosts, true);
 
-		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_gaming_mode_ipv6_ips', _('Gaming mode IPv6 IP-s'), null, 'ipv6', hosts, true);
+		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_gaming_mode_ipv6_ips', _('Gaming mode IPv6 addresses'), null, 'ipv6', hosts, true);
 		so.depends('homeproxy.config.ipv6_support', '1');
 
-		so = fwtool.addMACOption(ss, 'lan_ip_policy', 'lan_gaming_mode_mac_addrs', _('Gaming mode MAC-s'), null, hosts);
+		so = fwtool.addMACOption(ss, 'lan_ip_policy', 'lan_gaming_mode_mac_addrs', _('Gaming mode MAC addresses'), null, hosts);
 
-		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_global_proxy_ipv4_ips', _('Global proxy IPv4 IP-s'), null, 'ipv4', hosts, true);
+		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_global_proxy_ipv4_ips', _('Global proxy IPv4 addresses'), null, 'ipv4', hosts, true);
 		so.depends({'homeproxy.config.routing_mode': 'custom', '!reverse': true});
 
-		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_global_proxy_ipv6_ips', _('Global proxy IPv6 IP-s'), null, 'ipv6', hosts, true);
+		so = fwtool.addIPOption(ss, 'lan_ip_policy', 'lan_global_proxy_ipv6_ips', _('Global proxy IPv6 addresses'), null, 'ipv6', hosts, true);
 		so.depends({'homeproxy.config.routing_mode': /^((?!custom).)+$/, 'homeproxy.config.ipv6_support': '1'});
 
-		so = fwtool.addMACOption(ss, 'lan_ip_policy', 'lan_global_proxy_mac_addrs', _('Global proxy MAC-s'), null, hosts);
+		so = fwtool.addMACOption(ss, 'lan_ip_policy', 'lan_global_proxy_mac_addrs', _('Global proxy MAC addresses'), null, hosts);
 		so.depends({'homeproxy.config.routing_mode': 'custom', '!reverse': true});
 		/* LAN IP policy end */
 
 		/* WAN IP policy start */
 		ss.tab('wan_ip_policy', _('WAN IP Policy'));
 
-		so = ss.taboption('wan_ip_policy', form.DynamicList, 'wan_proxy_ipv4_ips', _('Proxy IPv4 IP-s'));
+		so = ss.taboption('wan_ip_policy', form.DynamicList, 'wan_proxy_ipv4_ips', _('Proxy IPv4 addresses'));
 		so.datatype = 'or(ip4addr, cidr4)';
 
-		so = ss.taboption('wan_ip_policy', form.DynamicList, 'wan_proxy_ipv6_ips', _('Proxy IPv6 IP-s'));
+		so = ss.taboption('wan_ip_policy', form.DynamicList, 'wan_proxy_ipv6_ips', _('Proxy IPv6 addresses'));
 		so.datatype = 'or(ip6addr, cidr6)';
 		so.depends('homeproxy.config.ipv6_support', '1');
 
-		so = ss.taboption('wan_ip_policy', form.DynamicList, 'wan_direct_ipv4_ips', _('Direct IPv4 IP-s'));
+		so = ss.taboption('wan_ip_policy', form.DynamicList, 'wan_direct_ipv4_ips', _('Direct IPv4 addresses'));
 		so.datatype = 'or(ip4addr, cidr4)';
 
-		so = ss.taboption('wan_ip_policy', form.DynamicList, 'wan_direct_ipv6_ips', _('Direct IPv6 IP-s'));
+		so = ss.taboption('wan_ip_policy', form.DynamicList, 'wan_direct_ipv6_ips', _('Direct IPv6 addresses'));
 		so.datatype = 'or(ip6addr, cidr6)';
 		so.depends('homeproxy.config.ipv6_support', '1');
 		/* WAN IP policy end */

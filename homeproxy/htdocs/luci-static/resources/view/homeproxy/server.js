@@ -148,7 +148,7 @@ return view.extend({
 		o = s.option(form.Flag, 'enabled', _('Enable'));
 		o.rmempty = false;
 
-		s = m.section(form.GridSection, 'server', _('Server settings'));
+		s = m.section(form.GridSection, 'server', _('Server Settings'));
 		s.addremove = true;
 		s.rowcolors = true;
 		s.sortable = true;
@@ -329,7 +329,7 @@ return view.extend({
 		o.modalonly = true;
 
 		o = s.option(form.Value, 'hysteria_masquerade', _('Masquerade'),
-			_('HTTP3 server behavior when authentication fails.<br/>A 404 page will be returned if empty.'));
+			_('HTTP/3 server behavior when authentication fails.<br/>A 404 page will be returned if empty.'));
 		o.depends('type', 'hysteria2');
 		o.modalonly = true;
 		/* Hysteria (2) config end */
@@ -569,7 +569,7 @@ return view.extend({
 
 		o = s.option(form.ListValue, 'tls_min_version', _('Minimum TLS version'),
 			_('The minimum TLS version that is acceptable.'));
-		o.value('', _('default'));
+		o.value('', _('Default'));
 		for (let i of hp.tls_versions)
 			o.value(i);
 		o.depends('tls', '1');
@@ -577,7 +577,7 @@ return view.extend({
 
 		o = s.option(form.ListValue, 'tls_max_version', _('Maximum TLS version'),
 			_('The maximum TLS version that is acceptable.'));
-		o.value('', _('default'));
+		o.value('', _('Default'));
 		for (let i of hp.tls_versions)
 			o.value(i);
 		o.depends('tls', '1');
@@ -632,13 +632,13 @@ return view.extend({
 			o.rmempty = false;
 			o.modalonly = true;
 
-			o = s.option(form.Flag, 'tls_dns01_challenge', _('DNS01 challenge'))
+			o = s.option(form.Flag, 'tls_dns01_challenge', _('DNS-01 challenge'))
 			o.depends('tls_acme', '1');
 			o.modalonly = true;
 
 			o = s.option(form.ListValue, 'tls_dns01_provider', _('DNS provider'));
-			o.value('alidns', _('AliYun'));
-			o.value('cfdns', _('CloudFlare'));
+			o.value('alidns', _('AliDNS'));
+			o.value('cfdns', _('Cloudflare'));
 			o.depends('tls_dns01_challenge', '1');
 			o.default = 'cfdns';
 			o.rmempty = false;
@@ -788,7 +788,7 @@ return view.extend({
 		o.inputstyle = 'action';
 		o.inputtitle = _('Upload...');
 		o.depends({'tls': '1', 'tls_key_path': '/etc/homeproxy/certs/server_privatekey.pem'});
-		o.onclick = L.bind(hp.uploadCertificate, this, _('private key'), 'server_privatekey');
+		o.onclick = L.bind(hp.uploadCertificate, this, _('Private key'), 'server_privatekey');
 		o.modalonly = true;
 
 		o = s.option(form.TextValue, 'tls_ech_key', _('ECH key'));

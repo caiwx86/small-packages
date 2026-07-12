@@ -325,7 +325,7 @@ return baseclass.extend({
 			if (!value)
 				return _('Expecting: %s').format(_('non-empty value'));
 			else if (value.match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') === null)
-				return _('Expecting: %s').format(_('valid uuid'));
+				return _('Expecting: %s').format(_('valid UUID'));
 		}
 
 		return true;
