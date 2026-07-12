@@ -31,7 +31,18 @@ const css = '				\
 
 const hp_dir = '/var/run/homeproxy';
 
-function getConnStat(o, site) {
+const connectionSites = [
+	{ type: 'baidu', name: _('Baidu'), url: 'https://www.baidu.com/' },
+	{ type: 'bilibili', name: _('Bilibili'), url: 'https://www.bilibili.com/' },
+	{ type: 'jd', name: _('JD'), url: 'https://www.jd.com/' },
+	{ type: 'google', name: _('Google'), url: 'https://www.google.com/' },
+	{ type: 'github', name: _('GitHub'), url: 'https://github.com/' },
+	{ type: 'youtube', name: _('YouTube'), url: 'https://www.youtube.com/' }
+];
+
+const connectionTestTimeout = 10000;
+
+function getConnectionStatus() {
 	const callConnStat = rpc.declare({
 		object: 'luci.homeproxy',
 		method: 'connection_check',
@@ -39,25 +50,121 @@ function getConnStat(o, site) {
 		expect: { '': {} }
 	});
 
-	o.default = E('div', { 'style': 'cbi-value-field' }, [
-		E('button', {
-			'class': 'btn cbi-button cbi-button-action',
-			'click': ui.createHandlerFn(this, () => {
-				return L.resolveDefault(callConnStat(site), {}).then((ret) => {
-					let ele = o.default.firstElementChild.nextElementSibling;
-					if (ret.result) {
-						ele.style.setProperty('color', 'green');
-						ele.innerHTML = _('passed');
-					} else {
-						ele.style.setProperty('color', 'red');
-						ele.innerHTML = _('failed');
-					}
-				});
-			})
-		}, [ _('Check') ]),
-		' ',
-		E('strong', { 'style': 'color:gray' }, _('unchecked')),
+	const table = E('table', { 'class': 'table' }, [
+		E('tr', { 'class': 'tr table-titles' }, [
+			E('th', { 'class': 'th' }, _('Website')),
+			E('th', { 'class': 'th' }, _('URL')),
+			E('th', { 'class': 'th' }, _('Connectivity')),
+			E('th', { 'class': 'th' }, _('Latency'))
+		])
 	]);
+	const statusElements = {};
+	const rows = connectionSites.map((site) => {
+		const state = E('strong', { 'style': 'color:gray' }, '-');
+		const latency = E('span', {}, '-');
+		statusElements[site.type] = { state, latency };
+
+		return [
+			site.name,
+			E('a', {
+				'href': site.url,
+				'target': '_blank',
+				'rel': 'noreferrer noopener',
+				'style': 'word-break:break-all'
+			}, site.url),
+			state,
+			latency
+		];
+	});
+	cbi_update_table(table, rows);
+
+	let running = false;
+	let generation = 0;
+	let testButton;
+
+	const updateResult = (site, result) => {
+		const elements = statusElements[site];
+		if (!elements)
+			return;
+
+		if (result?.result) {
+			elements.state.style.setProperty('color', 'green');
+			dom.content(elements.state, _('Connected'));
+			dom.content(elements.latency, _('%d ms').format(result.latency_ms));
+		} else {
+			elements.state.style.setProperty('color', 'red');
+			dom.content(elements.state, result?.timed_out ? _('Timed out') : _('Disconnected'));
+			dom.content(elements.latency, '-');
+		}
+	};
+
+	const runAllTests = () => {
+		if (running)
+			return Promise.resolve();
+
+		running = true;
+		testButton.disabled = true;
+		const currentGeneration = ++generation;
+		connectionSites.forEach((site) => {
+			const elements = statusElements[site.type];
+			elements.state.style.setProperty('color', 'gray');
+			dom.content(elements.state, _('Testing...'));
+			dom.content(elements.latency, '-');
+		});
+
+		return new Promise((resolve) => {
+			let settled = false;
+			const finish = (result) => {
+				if (settled)
+					return;
+
+				settled = true;
+				resolve(result);
+			};
+			const timer = window.setTimeout(() => finish({ timed_out: true }), connectionTestTimeout);
+
+			L.resolveDefault(callConnStat('all'), { results: [] }).then((result) => {
+				window.clearTimeout(timer);
+				finish(result);
+			});
+		}).then((result) => {
+			if (currentGeneration !== generation)
+				return;
+
+			const results = {};
+			(result.results || []).forEach((siteResult) => {
+				results[siteResult.site] = siteResult;
+			});
+			connectionSites.forEach((site) => {
+				updateResult(site.type, results[site.type] || {
+					result: false,
+					timed_out: !!result.timed_out
+				});
+			});
+		}).finally(() => {
+			if (currentGeneration === generation) {
+				running = false;
+				testButton.disabled = false;
+			}
+		});
+	};
+
+	testButton = E('button', {
+		'class': 'btn cbi-button cbi-button-action',
+		'style': 'margin-left:4px',
+		'click': ui.createHandlerFn(this, runAllTests)
+	}, [ _('Test all') ]);
+
+	const view = E('div', { 'class': 'cbi-map' }, [
+		E('h3', { 'name': 'content', 'style': 'align-items:center;display:flex' }, [
+			_('Connection status'),
+			testButton
+		]),
+		E('div', { 'class': 'cbi-section' }, [ table ])
+	]);
+
+	window.setTimeout(runAllTests, 0);
+	return view;
 }
 
 const resources = [
@@ -280,17 +387,11 @@ return view.extend({
 
 		m = new form.Map('homeproxy');
 
-		s = m.section(form.NamedSection, 'config', 'homeproxy', _('Connection check'));
-		s.anonymous = true;
-
-		o = s.option(form.DummyValue, '_check_baidu', _('BaiDu'));
-		o.cfgvalue = L.bind(getConnStat, this, o, 'baidu');
-
-		o = s.option(form.DummyValue, '_check_google', _('Google'));
-		o.cfgvalue = L.bind(getConnStat, this, o, 'google');
-
 		s = m.section(form.NamedSection, 'config', 'homeproxy');
 		s.anonymous = true;
+
+		o = s.option(form.DummyValue, '_connection_status');
+		o.render = L.bind(getConnectionStatus, this);
 
 		o = s.option(form.DummyValue, '_resources');
 		o.render = L.bind(getResources, this, o);

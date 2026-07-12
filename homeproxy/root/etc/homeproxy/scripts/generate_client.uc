@@ -63,7 +63,7 @@ const ntp_server = uci.get(uciconfig, uciinfra, 'ntp_server') || 'time.apple.com
 const ipv6_support = uci.get(uciconfig, ucimain, 'ipv6_support') || '0';
 
 let main_node, main_udp_node, dedicated_udp_node, default_outbound, default_outbound_dns,
-    domain_strategy, sniff_override, dns_server, china_dns_server, dns_default_strategy,
+    domain_strategy, dns_server, china_dns_server, dns_default_strategy,
     dns_default_server, dns_disable_cache, dns_disable_cache_expire, dns_independent_cache,
     dns_client_subnet, cache_file_store_rdrc, cache_file_rdrc_timeout, direct_domain_list,
     proxy_domain_list;
@@ -92,7 +92,6 @@ if (routing_mode !== 'custom') {
 	if (proxy_domain_list)
 		proxy_domain_list = split(proxy_domain_list, /[\r\n]/);
 
-	sniff_override = uci.get(uciconfig, uciinfra, 'sniff_override') || '1';
 } else {
 	/* DNS settings */
 	dns_default_strategy = uci.get(uciconfig, ucidnssetting, 'default_strategy');
@@ -108,7 +107,6 @@ if (routing_mode !== 'custom') {
 	default_outbound = uci.get(uciconfig, uciroutingsetting, 'default_outbound') || 'nil';
 	default_outbound_dns = uci.get(uciconfig, uciroutingsetting, 'default_outbound_dns') || 'default-dns';
 	domain_strategy = uci.get(uciconfig, uciroutingsetting, 'domain_strategy');
-	sniff_override = uci.get(uciconfig, uciroutingsetting, 'sniff_override');
 }
 
 const proxy_mode = uci.get(uciconfig, ucimain, 'proxy_mode') || 'redirect_tproxy',
@@ -216,7 +214,6 @@ function get_outbound(cfg) {
 		return outbounds;
 	} else {
 		switch (cfg) {
-		case 'block-out':
 		case 'direct-out':
 			return cfg;
 		default:
@@ -388,9 +385,9 @@ if (!isEmpty(main_node)) {
 				enabled: true,
 				server_name: cfg.tls_sni
 			} : null,
-			domain_resolver: (cfg.address_resolver || cfg.address_strategy) ? {
-				server: get_resolver(cfg.address_resolver || dns_default_server),
-				strategy: cfg.address_strategy
+			domain_resolver: (cfg.domain_resolver || cfg.domain_strategy) ? {
+				server: get_resolver(cfg.domain_resolver || dns_default_server),
+				strategy: cfg.domain_strategy
 			} : null,
 			detour: outbound
 		});
@@ -508,10 +505,6 @@ config.outbounds = [
 		type: 'direct',
 		tag: 'direct-out',
 		routing_mark: strToInt(self_mark)
-	},
-	{
-		type: 'block',
-		tag: 'block-out'
 	}
 ];
 
@@ -835,7 +828,10 @@ if (!isEmpty(main_node)) {
 		});
 	});
 
-	config.route.final = get_outbound(default_outbound);
+	if (default_outbound === 'reject')
+		push(config.route.rules, { action: 'reject' });
+	else
+		config.route.final = get_outbound(default_outbound);
 
 	/* Rule set */
 	uci.foreach(uciconfig, uciruleset, (cfg) => {

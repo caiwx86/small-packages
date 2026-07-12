@@ -31,6 +31,14 @@ const RESOURCE_SOURCES = {
 	china_list: 'https://cdn.jsdelivr.net/gh/Loyalsoldier/surge-rules@release/direct.txt',
 	gfw_list: 'https://cdn.jsdelivr.net/gh/Loyalsoldier/surge-rules@release/gfw.txt'
 };
+const CONNECTION_SITES = {
+	baidu: 'https://www.baidu.com/',
+	bilibili: 'https://www.bilibili.com/',
+	jd: 'https://www.jd.com/',
+	google: 'https://www.google.com/',
+	github: 'https://github.com/',
+	youtube: 'https://www.youtube.com/'
+};
 
 const methods = {
 	acllist_read: {
@@ -151,20 +159,57 @@ const methods = {
 	connection_check: {
 		args: { site: 'site' },
 		call: function(req) {
-			let url;
-			switch(req.args?.site) {
-			case 'baidu':
-				url = 'https://www.baidu.com';
-				break;
-			case 'google':
-				url = 'https://www.google.com';
-				break;
-			default:
+			const requested_site = req.args?.site;
+			if (requested_site !== 'all' && !CONNECTION_SITES[requested_site])
 				return { result: false, error: 'illegal site' };
-				break;
+
+			const sites = (requested_site === 'all') ? keys(CONNECTION_SITES) : [ requested_site ];
+			let commands = [];
+			for (let site in sites) {
+				push(commands, sprintf(
+					'/usr/bin/curl --location --silent --output /dev/null --user-agent %s --connect-timeout 5 --max-time 9 --write-out %s %s',
+					shellquote('Mozilla/5.0'),
+					shellquote(sprintf('%s\\t%%{http_code}\\t%%{time_total}\\n', site)),
+					shellquote(CONNECTION_SITES[site])
+				));
 			}
 
-			return { result: (system(`/usr/bin/wget --spider -qT3 ${url} 2>"/dev/null"`, 3100) === 0) };
+			const fd = popen(sprintf('(%s & wait) 2>"/dev/null"', join(' & ', commands)));
+			if (!fd)
+				return { result: false, error: 'failed to execute connection test' };
+
+			let payload = '', line;
+			while (true) {
+				line = fd.read('line');
+				if (line === null || line === '')
+					break;
+				payload += line;
+			}
+			fd.close();
+
+			const responses = {};
+			for (let response in split(trim(payload), /[\r\n]+/)) {
+				const fields = split(response, '\t');
+				if (length(fields) !== 3 || !CONNECTION_SITES[fields[0]])
+					continue;
+
+				const time_parts = split(fields[2], '.');
+				const fraction = ((time_parts[1] || '') + '000');
+				const latency_ms = int(time_parts[0] || '0') * 1000 + int(substr(fraction, 0, 3));
+				const http_code = int(fields[1] || '0');
+				responses[fields[0]] = {
+					site: fields[0],
+					result: http_code >= 100 && http_code <= 599,
+					latency_ms,
+					timed_out: http_code === 0 && latency_ms >= 8900
+				};
+			}
+
+			let results = [];
+			for (let site in sites)
+				push(results, responses[site] || { site, result: false, latency_ms: 0, timed_out: false });
+
+			return { results };
 		}
 	},
 
@@ -456,20 +501,25 @@ const methods = {
 						output: log_path,
 						timestamp: true
 					},
+					dns: {
+						servers: [
+							{
+								type: 'local',
+								tag: 'local-dns'
+							}
+						]
+					},
 					outbounds: [
 						{
 							type: 'direct',
 							tag: 'direct-out'
-						},
-						{
-							type: 'block',
-							tag: 'block-out'
 						}
 					],
 					endpoints: [],
 					route: {
 						final: selected_tag,
-						auto_detect_interface: true
+						auto_detect_interface: true,
+						default_domain_resolver: 'local-dns'
 					},
 					experimental: {
 						clash_api: {

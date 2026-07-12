@@ -16,7 +16,7 @@ LUCI_DEPENDS:= \
 
 PKG_NAME:=luci-app-homeproxy
 PKG_VERSION=$(PKG_SRC_VERSION)
-PKG_RELEASE:=7
+PKG_RELEASE:=11
 PKG_PO_VERSION=$(PKG_SRC_VERSION)-r$(PKG_RELEASE)
 
 define Package/luci-app-homeproxy/conffiles

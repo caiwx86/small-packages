@@ -382,11 +382,6 @@ return view.extend({
 		for (let i in hp.dns_strategy)
 			so.value(i, hp.dns_strategy[i]);
 
-		so = ss.option(form.Flag, 'sniff_override', _('Override destination'),
-			_('Override the connection destination address with the sniffed domain.'));
-		so.default = so.enabled;
-		so.rmempty = false;
-
 		so = ss.option(form.ListValue, 'default_outbound', _('Default outbound'),
 			_('Default outbound for connections not matched by any routing rules.'));
 		so.load = function(section_id) {
@@ -395,7 +390,7 @@ return view.extend({
 
 			this.value('nil', _('Disable (the service)'));
 			this.value('direct-out', _('Direct'));
-			this.value('block-out', _('Block'));
+			this.value('reject', _('Reject'));
 			uci.sections(data[0], 'routing_node', (res) => {
 				if (res.enabled === '1')
 					this.value(res['.name'], res.label);
@@ -1018,8 +1013,8 @@ return view.extend({
 		so.depends('type', 'quic');
 		so.modalonly = true;
 
-		so = ss.option(form.ListValue, 'address_resolver', _('Address resolver'),
-			_('Tag of a another server to resolve the domain name in the address. Required if address contains domain.'));
+		so = ss.option(form.ListValue, 'domain_resolver', _('Domain resolver'),
+			_('Tag of another DNS server used to resolve a domain name in the server address.'));
 		so.load = function(section_id) {
 			delete this.keylist;
 			delete this.vallist;
@@ -1039,7 +1034,7 @@ return view.extend({
 				let conflict = false;
 				uci.sections(data[0], 'dns_server', (res) => {
 					if (res['.name'] !== section_id)
-						if (res.address_resolver === section_id && res['.name'] == value)
+						if (res.domain_resolver === section_id && res['.name'] == value)
 							conflict = true;
 				});
 				if (conflict)
@@ -1050,11 +1045,11 @@ return view.extend({
 		}
 		so.modalonly = true;
 
-		so = ss.option(form.ListValue, 'address_strategy', _('Address strategy'),
+		so = ss.option(form.ListValue, 'domain_strategy', _('Domain strategy'),
 			_('The domain strategy for resolving the domain name in the address.'));
 		for (let i in hp.dns_strategy)
 			so.value(i, hp.dns_strategy[i]);
-		so.depends({'address_resolver': '', '!reverse': true});
+		so.depends({'domain_resolver': '', '!reverse': true});
 		so.modalonly = true;
 
 		so = ss.option(form.ListValue, 'outbound', _('Outbound'),

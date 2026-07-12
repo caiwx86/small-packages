@@ -59,6 +59,16 @@ if (!isEmpty(uci.get(uciconfig, uciinfra, 'tun_gso')))
 if (!isEmpty(uci.get(uciconfig, ucirouting, 'endpoint_independent_nat')))
 	uci.delete(uciconfig, ucirouting, 'endpoint_independent_nat');
 
+/* legacy inbound sniff fields were replaced by route actions */
+if (!isEmpty(uci.get(uciconfig, uciinfra, 'sniff_override')))
+	uci.delete(uciconfig, uciinfra, 'sniff_override');
+if (!isEmpty(uci.get(uciconfig, ucirouting, 'sniff_override')))
+	uci.delete(uciconfig, ucirouting, 'sniff_override');
+
+/* block-out was replaced by the reject route action */
+if (uci.get(uciconfig, ucirouting, 'default_outbound') === 'block-out')
+	uci.set(uciconfig, ucirouting, 'default_outbound', 'reject');
+
 /* create migration section */
 if (!uci.get(uciconfig, ucimigration))
 	uci.set(uciconfig, ucimigration, uciconfig);
@@ -87,6 +97,15 @@ if (uci.get(uciconfig, 'experimental'))
 
 /* block-dns was removed from built-in dns servers */
 const default_dns_server = uci.get(uciconfig, ucidns, 'default_server');
+
+/* dns_strategy was renamed to default_strategy */
+const legacy_dns_strategy = uci.get(uciconfig, ucidns, 'dns_strategy');
+if (!isEmpty(legacy_dns_strategy)) {
+	if (isEmpty(uci.get(uciconfig, ucidns, 'default_strategy')))
+		uci.set(uciconfig, ucidns, 'default_strategy', legacy_dns_strategy);
+	uci.delete(uciconfig, ucidns, 'dns_strategy');
+}
+
 if (default_dns_server === 'block-dns') {
 	/* append a rule at last to block all DNS queries */
 	uci.set(uciconfig, '_migration_dns_final_block', ucidnsrule);
@@ -95,11 +114,24 @@ if (default_dns_server === 'block-dns') {
 	uci.set(uciconfig, '_migration_dns_final_block', 'mode', 'default');
 	uci.set(uciconfig, '_migration_dns_final_block', 'action', 'reject');
 	uci.set(uciconfig, ucidns, 'default_server', 'default-dns');
-}
+} else if (default_dns_server === 'local-dns')
+	uci.set(uciconfig, ucidns, 'default_server', 'default-dns');
 
 const dns_server_migration = {};
 /* DNS servers options */
 uci.foreach(uciconfig, ucidnsserver, (cfg) => {
+	/* legacy DNS server resolver fields were moved into dial fields */
+	if (!isEmpty(cfg.address_resolver)) {
+		if (isEmpty(cfg.domain_resolver))
+			uci.set(uciconfig, cfg['.name'], 'domain_resolver', cfg.address_resolver);
+		uci.delete(uciconfig, cfg['.name'], 'address_resolver');
+	}
+	if (!isEmpty(cfg.address_strategy)) {
+		if (isEmpty(cfg.domain_strategy))
+			uci.set(uciconfig, cfg['.name'], 'domain_strategy', cfg.address_strategy);
+		uci.delete(uciconfig, cfg['.name'], 'address_strategy');
+	}
+
 	/* legacy format was deprecated in sb 1.12 */
 	if (cfg.address) {
 		const addr = parseURL((!match(cfg.address, /:\/\//) ? 'udp://' : '') + (validation('ip6addr', cfg.address) ? `[${cfg.address}]` : cfg.address));
