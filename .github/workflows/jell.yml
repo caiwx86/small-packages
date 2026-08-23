@@ -155,6 +155,8 @@ jobs:
               luci-app-dae dae
         git_sparse_clone main https://github.com/djylb/nps-openwrt \
               npc luci-app-npc
+        git_sparse_clone main https://github.com/smallprogram/openwrt-ghfu \
+              luci-app-ghfu
         git_clone https://github.com/sirpdboy/luci-app-chatgpt-web
         git_clone https://github.com/sirpdboy/luci-app-eqosplus
         git_sparse_clone master "https://github.com/coolsnowwolf/lede" package/wwan package/lean package/network/services/shellsync package/qca/shortcut-fe && cp -rf wwan/*/* ./ ; rm -Rf wwan
