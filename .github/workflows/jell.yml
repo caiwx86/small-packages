@@ -149,10 +149,12 @@ jobs:
         ) &
         (
         git_clone https://github.com/QiuSimons/vmlinux-btf
-        git_sparse_clone kix https://github.com/QiuSimons/luci-app-daed \
-              luci-app-daed daed
-        git_sparse_clone kix https://github.com/QiuSimons/luci-app-dae \
-              luci-app-dae dae
+        # git_sparse_clone kix https://github.com/QiuSimons/luci-app-daed \
+        #      luci-app-daed daed
+        # git_sparse_clone kix https://github.com/QiuSimons/luci-app-dae \
+        #      luci-app-dae dae
+        git_sparse_clone master https://github.com/kenzok8/small \
+               dae daed luci-app-daede
         git_sparse_clone main https://github.com/djylb/nps-openwrt \
               npc luci-app-npc
         git_sparse_clone main https://github.com/smallprogram/openwrt-ghfu \
