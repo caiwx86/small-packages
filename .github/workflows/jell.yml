@@ -175,6 +175,8 @@ jobs:
               msd_lite luci-app-msd_lite
         git_sparse_clone master https://github.com/fengqi/luci-app-uugamebooster \
               uugamebooster luci-app-uugamebooster
+        git_sparse_clone master https://github.com/kenzok8/small \
+              clashoo luci-app-clashoo luci-app-daede
         ) &
         (
         git_clone https://github.com/muink/luci-app-dnsproxy
