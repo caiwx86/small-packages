@@ -5,23 +5,17 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=daed
-PKG_VERSION:=2026.08.26
-DAED_VERSION:=daed-671e65d
-WING_VERSION:=wing-dc50308
-CORE_VERSION:=core-5db27a0
-WING_HASH_SHORT:=$(shell echo $(WING_VERSION) | cut -d- -f2)
-CORE_HASH_SHORT:=$(shell echo $(CORE_VERSION) | cut -d- -f2)
-PKG_RELEASE:=1
+PKG_VERSION:=2026.08.28
+PKG_RELEASE:=4
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_VERSION:=671e65d2fdcd62fe6a3ec18ecda209c5addea898
-PKG_SOURCE_URL:=https://github.com/daeuniverse/daed.git
-PKG_MIRROR_HASH:=skip
+PKG_SOURCE:=daed-src-2026.08.28-73f01b995c34.tar.gz
+PKG_SOURCE_URL:=https://github.com/kenzok8/openwrt-daede/releases/download/daed-src
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+PKG_HASH:=73f01b995c341586fdf7ab6ee8ed7a4cb52b59fd913ca75b1e61b3ecb6c9a350
 
 PKG_LICENSE:=AGPL-3.0-only MIT
 PKG_LICENSE_FILES:=LICENSE wing/LICENSE
-PKG_MAINTAINER:=Tianling Shen <cnsztl@immortalwrt.org>
+PKG_MAINTAINER:=kenzok8
 
 DAED_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 PKG_BUILD_DIR:=$(DAED_BUILD_DIR)/wing
@@ -29,6 +23,13 @@ PKG_BUILD_DIR:=$(DAED_BUILD_DIR)/wing
 PKG_BUILD_DEPENDS:=golang/host bpf-headers
 PKG_BUILD_PARALLEL:=1
 PKG_BUILD_FLAGS:=no-mips16
+
+# armv7 lacks a CO-RE vmlinux.h for the trace eBPF (under wing/dae-core), so
+# trace's bpf2go fails there. Apply sbwml/openwrt_helloworld's arm patches
+# (add vmlinux-arm.h + drop the kprobe that doesn't work) to build on arm.
+ifeq ($(ARCH),arm)
+PATCH_DIR:=$(CURDIR)/patches_arm
+endif
 
 GO_PKG:=github.com/daeuniverse/dae-wing
 
@@ -38,16 +39,14 @@ GO_PKG_LDFLAGS:= \
 	-X '$(GO_PKG)/db.AppDescription=$(PKG_NAME) is a integration solution of dae, API and UI.'
 GO_PKG_LDFLAGS_X:= \
 	$(GO_PKG)/db.AppName=$(PKG_NAME) \
-	$(GO_PKG)/db.AppVersion=$(DAED_VERSION)_$(WING_VERSION)_$(CORE_VERSION)
-GO_PKG_TAGS:=embedallowed,trace
+	$(GO_PKG)/db.AppVersion=$(PKG_VERSION)
+GO_PKG_TAGS:=embedallowed,trace,timetzdata
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/bpf.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-GO_PKG_BUILD_VARS+= \
-	GOFLAGS="-trimpath -buildvcs=false -pgo=auto"
-
+GO_PKG_BUILD_VARS+= GOFLAGS="-trimpath -buildvcs=false -pgo=auto"
 GO_PKG_TARGET_VARS+= \
 	CGO_LDFLAGS="$(TARGET_LDFLAGS) -static -Wl,-s" \
 	GOEXPERIMENT=newinliner,simd
@@ -94,52 +93,11 @@ define Package/daed/conffiles
 /etc/config/daed
 endef
 
-NODE_VERSION:=v24.12.0
-NODE_DIST:=node-$(NODE_VERSION)-linux-x64
-NODE_URL:=https://nodejs.org/dist/$(NODE_VERSION)/$(NODE_DIST).tar.xz
-
 define Build/Prepare
-	( \
-		rm -rf $(DAED_BUILD_DIR) ; \
-		mkdir -p $(DAED_BUILD_DIR) ; \
-		$(TAR) --strip-components=1 -C $(DAED_BUILD_DIR) -xzf $(DL_DIR)/$(PKG_NAME)-$(PKG_VERSION).tar.gz ; \
-		git clone https://github.com/daeuniverse/dae-wing $(PKG_BUILD_DIR) && \
-			git -C $(PKG_BUILD_DIR) checkout $(WING_HASH_SHORT) ; \
-		rm -rf $(PKG_BUILD_DIR)/dae-core ; \
-		git clone https://github.com/daeuniverse/dae $(PKG_BUILD_DIR)/dae-core && \
-			git -C $(PKG_BUILD_DIR)/dae-core checkout $(CORE_HASH_SHORT) ; \
-		pushd $(PKG_BUILD_DIR)/dae-core ; \
-			git submodule update --init ; \
-			go get -u=patch ; \
-			go mod tidy ; \
-		popd ; \
-		pushd $(PKG_BUILD_DIR) ; \
-			go get -u=patch ; \
-			go mod tidy ; \
-			wget -qO default.pgo "https://github.com/QiuSimons/luci-app-dae/raw/refs/heads/kix/dae/pprof/default.pgo" ; \
-		popd ; \
-		mkdir -p $(DAED_BUILD_DIR)/.node_tmp/config ; \
-		wget -qO - "$(NODE_URL)" | tar -xJ -C $(DAED_BUILD_DIR)/.node_tmp --strip-components=1 ; \
-		export PATH="$(DAED_BUILD_DIR)/.node_tmp/bin:$$$$PATH" ; \
-		export XDG_CONFIG_HOME="$(DAED_BUILD_DIR)/.node_tmp/config" ; \
-		npm install -g pnpm ; \
-		pushd $(DAED_BUILD_DIR) ; \
-			pnpm install ; \
-			pnpm build --filter daed ; \
-		popd ; \
-		mkdir -p $(PKG_BUILD_DIR)/webrender/web ; \
-		cp -rf $(DAED_BUILD_DIR)/apps/web/dist/* $(PKG_BUILD_DIR)/webrender/web ; \
-		find $(PKG_BUILD_DIR)/webrender/web -name "*.map" -type f -delete ; \
-		find $(PKG_BUILD_DIR)/webrender/web -type f -size +4k ! -name "*.gz" ! -name "*.woff"  ! -name "*.woff2" -exec sh -c '\
-			gzip -9 -k "{}"; \
-			if [ "$$$$(stat -c %s {})" -lt "$$$$(stat -c %s {}.gz)" ]; then \
-				rm {}.gz; \
-			else \
-				rm {}; \
-			fi' \
-		";" ; \
-		rm -rf $(DAED_BUILD_DIR)/.node_tmp ; \
-	)
+	mkdir -p $(DAED_BUILD_DIR)
+	$(TAR) --strip-components=1 -C $(DAED_BUILD_DIR) -xzf $(DL_DIR)/$(PKG_SOURCE)
+	$(if $(wildcard $(CURDIR)/patches/*.patch),$(call PatchDir,$(PKG_BUILD_DIR),$(CURDIR)/patches,))
+	$(if $(filter arm,$(ARCH)),$(if $(wildcard $(CURDIR)/patches_arm/*.patch),$(call PatchDir,$(PKG_BUILD_DIR),$(CURDIR)/patches_arm,)))
 endef
 
 DAE_CFLAGS:= \
@@ -174,12 +132,19 @@ define Package/daed/install
 	$(call GoPackage/Package/Install/Bin,$(PKG_INSTALL_DIR))
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/dae-wing $(1)/usr/bin/daed
+	$(INSTALL_BIN) $(CURDIR)/files/daed-guard $(1)/usr/bin/daed-guard
+
+	$(INSTALL_DIR) $(1)/usr/share/daed
+	$(INSTALL_DATA) $(CURDIR)/files/daed-cleanup.sh $(1)/usr/share/daed/cleanup.sh
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) $(CURDIR)/files/daed.config $(1)/etc/config/daed
 
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(CURDIR)/files/daed.init $(1)/etc/init.d/daed
+
+	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
+	$(INSTALL_DATA) $(CURDIR)/files/daed.keep $(1)/lib/upgrade/keep.d/daed
 endef
 
 $(eval $(call GoBinPackage,daed))

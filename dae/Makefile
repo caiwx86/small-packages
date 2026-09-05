@@ -5,51 +5,60 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=dae
-PKG_VERSION:=2026.09.02
-PKG_RELEASE:=1
+PKG_VERSION:=2026.08.28
+PKG_RELEASE:=3
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_VERSION:=ebbec6b5624d7790c58a11e081604e30b6c947b3
-PKG_SOURCE_URL:=https://github.com/olicesx/dae.git
-PKG_MIRROR_HASH:=skip
+PKG_SOURCE:=dae-src-2026.08.28-d6aca8a10b35.tar.gz
+PKG_SOURCE_URL:=https://github.com/kenzok8/openwrt-daede/releases/download/dae-src
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+PKG_HASH:=d6aca8a10b3549d28ff29979793fc0e074f183957f516a17b50d6f3961730c30
 
 PKG_LICENSE:=AGPL-3.0-only
 PKG_LICENSE_FILE:=LICENSE
-PKG_MAINTAINER:=Tianling Shen <cnsztl@immortalwrt.org>
+PKG_MAINTAINER:=kenzok8
+
+DAE_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+PKG_BUILD_DIR:=$(DAE_BUILD_DIR)/core
 
 PKG_BUILD_DEPENDS:=golang/host bpf-headers
 PKG_BUILD_PARALLEL:=1
 PKG_BUILD_FLAGS:=no-mips16
 
+# armv7 lacks a CO-RE vmlinux.h for the trace eBPF, so trace's bpf2go fails to
+# build there. Apply sbwml/openwrt_helloworld's arm patches (add vmlinux-arm.h
+# + drop the kprobe that doesn't work) to let dae build on arm targets.
+ifeq ($(ARCH),arm)
+PATCH_DIR:=$(CURDIR)/patches_arm
+endif
+
 GO_PKG:=github.com/daeuniverse/dae
 GO_PKG_EXCLUDES:=control/kern/tests
-
 GO_PKG_LDFLAGS:= \
 	-s -w -buildid= \
 	-linkmode external -extldflags '-static -Wl,-s'
 GO_PKG_LDFLAGS_X:= \
 	$(GO_PKG)/cmd.Version=$(PKG_VERSION) \
 	$(GO_PKG)/common/consts.MaxMatchSetLen_=1024
-GO_PKG_TAGS:=trace
-
-PGO_PROFILE:=$(CURDIR)/pprof/default.pgo
+GO_PKG_TAGS:=trace,timetzdata
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/bpf.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-GO_PKG_BUILD_VARS+= \
-	GOFLAGS="-trimpath -buildvcs=false -pgo=auto"
-
+GO_PKG_BUILD_VARS+= GOFLAGS="-trimpath -buildvcs=false -pgo=auto"
 GO_PKG_TARGET_VARS+= \
 	CGO_LDFLAGS="$(TARGET_LDFLAGS) -static -Wl,-s" \
 	GOEXPERIMENT=newinliner,simd
 
-define Package/dae
+define Package/dae/Default
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=Web Servers/Proxies
+  URL:=https://github.com/daeuniverse/dae
+endef
+
+define Package/dae
+  $(call Package/dae/Default)
   TITLE:=A lightweight and high-performance transparent proxy solution
   DEPENDS:=$(GO_ARCH_DEPENDS) \
     +ca-bundle +kmod-sched-core +kmod-sched-bpf \
@@ -73,8 +82,13 @@ define Package/dae/config
 	endchoice
 endef
 
+define Package/dae/description
+  dae, means goose, is a lightweight and high-performance transparent
+  proxy solution.
+endef
+
 define Package/dae/conffiles
-/etc/dae/
+/etc/dae/config.dae
 /etc/config/dae
 endef
 
@@ -83,17 +97,16 @@ DAE_CFLAGS:= \
 	-DMAX_MATCH_SET_LEN=1024 \
 	-I$(BPF_HEADERS_DIR)/tools/lib \
 	-I$(BPF_HEADERS_DIR)/arch/$(BPF_KARCH)/include/asm/mach-generic
-	
+
 define Build/Prepare
-	$(call Build/Prepare/Default)
-	[ -f "$(PGO_PROFILE)" ] && $(CP) "$(PGO_PROFILE)" "$(PKG_BUILD_DIR)/default.pgo" || true
+	mkdir -p $(DAE_BUILD_DIR)
+	$(TAR) --strip-components=1 -C $(DAE_BUILD_DIR) -xzf $(DL_DIR)/$(PKG_SOURCE)
+	$(if $(wildcard $(PATCH_DIR)/*.patch),$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR),))
 endef
 
 define Build/Compile
 	( \
 		pushd $(PKG_BUILD_DIR) ; \
-		go get -u=patch ; \
-		go mod tidy ; \
 		export \
 		$(GO_GENERAL_BUILD_CONFIG_VARS) \
 		$(GO_PKG_BUILD_CONFIG_VARS) \
@@ -112,17 +125,16 @@ endef
 
 define Package/dae/install
 	$(call GoPackage/Package/Install/Bin,$(PKG_INSTALL_DIR))
-	$(INSTALL_DIR) $(1)/usr/bin/
+	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/dae $(1)/usr/bin/dae
-	$(INSTALL_DIR) $(1)/etc/dae/
-	$(INSTALL_CONF) $(PKG_BUILD_DIR)/example.dae $(1)/etc/dae/
-	$(INSTALL_CONF) $(CURDIR)/files/config.dae $(1)/etc/dae/config.dae
-	$(INSTALL_DIR) $(1)/etc/dae/config.d/
-	$(INSTALL_CONF) $(CURDIR)/files/config.d/dns.dae $(1)/etc/dae/config.d/dns.dae
-	$(INSTALL_CONF) $(CURDIR)/files/config.d/node.dae $(1)/etc/dae/config.d/node.dae
-	$(INSTALL_CONF) $(CURDIR)/files/config.d/route.dae $(1)/etc/dae/config.d/route.dae
+
+	$(INSTALL_DIR) $(1)/etc/dae
+	$(INSTALL_CONF) $(PKG_BUILD_DIR)/example.dae $(1)/etc/dae/example.dae
+	$(SED) 's|^[[:space:]]*#lan_interface: docker0|    lan_interface: br-lan|' $(1)/etc/dae/example.dae
+
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) $(CURDIR)/files/dae.config $(1)/etc/config/dae
+
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(CURDIR)/files/dae.init $(1)/etc/init.d/dae
 endef
