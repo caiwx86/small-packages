@@ -114,7 +114,7 @@ jobs:
         git_clone https://github.com/peter-tank/luci-app-autorepeater
         git_clone https://github.com/sirpdboy/luci-app-cupsd cupsd1 && mv -n cupsd1/{luci-app-cupsd,cups} ./ ; rm -rf cupsd1
         git_sparse_clone v5 https://github.com/sbwml/luci-app-mosdns \
-                  mosdns luci-app-mosdns v2dat
+                  mosdns luci-app-mosdns geo2txt
         ) &
         (
         git_clone https://github.com/esirplayground/LingTiGameAcc
