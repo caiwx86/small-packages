@@ -88,7 +88,8 @@ jobs:
         git_clone https://github.com/kiddin9/aria2 aria2
         git_clone https://github.com/kiddin9/autoshare && mvdir autoshare
         git_clone https://github.com/kiddin9/luci-app-wizard
-        git_clone https://github.com/kiddin9/openwrt-adguardhome && mvdir openwrt-adguardhome
+        #git_clone https://github.com/kiddin9/openwrt-adguardhome && mvdir openwrt-adguardhome
+        git_clone https://github.com/w9315273/luci-app-adguardhome
         git_clone https://github.com/kiddin9/openwrt-clouddrive2 && mvdir openwrt-clouddrive2
         git_clone https://github.com/kiddin9/openwrt-filebrowser && mvdir openwrt-filebrowser
         ) &
@@ -153,6 +154,8 @@ jobs:
         #      luci-app-daed daed
         # git_sparse_clone kix https://github.com/QiuSimons/luci-app-dae \
         #      luci-app-dae dae
+        git_sparse_clone master https://github.com/xiaoxiao29/luci-app-adguardhome \
+              AdGuardHome
         git_sparse_clone master https://github.com/kenzok8/small \
                dae daed luci-app-daede
         git_sparse_clone main https://github.com/djylb/nps-openwrt \
