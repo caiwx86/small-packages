@@ -1,87 +1,67 @@
-# LUCI-THEME-FOOTSTRAP
+# luci-theme-footstrap (the package)
 
-**English** · [Русский](README_ru.md) ·
-**[Playground — try the whole thing with no router](https://vizzletf.github.io/luci-theme-footstrap/playground/)**
+A LuCI theme for OpenWrt **24.10 and newer** (ucode templates). Installing and using it:
+[the repository README](../README.md). Developer documentation: [`../docs/`](../docs/README.md).
 
-[![owfeed](https://img.shields.io/endpoint?url=https://repo.owfeed.org/badge/luci-theme-footstrap.json)](https://owfeed.org/install/)
-[![owfeed](https://img.shields.io/endpoint?url=https://repo.owfeed.org/badge/luci-theme-footstrap-releases.json)](https://owfeed.org/install/)
+Internal name: `footstrap`. Media path: `/luci-static/footstrap`.
 
-A LuCI theme for OpenWrt 24.10 and newer. No framework, `luci-base` is the only dependency.
-Browsers: **Chrome 108, Firefox 101, Safari 15.4** and newer. Older ones render a plainer page
-rather than a broken one; the floor is derived from the stylesheet by a gate and written down in
-[docs/css.md](docs/css.md#the-browser-floor).
+## One theme, one entry
 
-> **23.05** is end-of-life and the theme stops there: **0.14.2** is the last version that runs on it.
-> The installer serves that release to a 23.05 router — pinned, signed and verified like any other —
-> and says so. Newer versions need 24.10 or later, where `ui.RangeSlider` exists.
+`luci.themes` carries **exactly one** entry, `Footstrap` → `/luci-static/footstrap`. Layout (top bar
+by default, or the side menu), mode, palette, density, wallpaper, rounding and every colour — accent,
+the three status colours, the four surfaces — are **client** axes on the Footstrap tab of
+System → System: `localStorage` plus attributes and inline properties on `:root`, and nothing is
+written to the router until "Save as default" is pressed.
+There are no per-layout or per-mode themes; every legacy name (`FootstrapSidebar`, `FootstrapOnTop`,
+`…-dark`/`…-light`) is deleted by `root/etc/uci-defaults/30_luci-theme-footstrap`.
 
-<picture>
-  <source media="(max-width: 767px)" srcset="assets/readme/phone-menu-dark.png">
-  <img src="assets/readme/overview-top-dark.png" width="100%" alt="The same overview in dark with the top bar: the menu sits on the brand's row and the content runs full width.">
-</picture>
+There is one menu renderer too, `menu-footstrap.js`. The top bar is its own markup, morphed by CSS
+through `:root[data-layout]`. No second template, no second renderer, no `footstrap-top` symlink.
 
-<details>
-<summary>Appearance settings</summary>
+**The theme's boundary:** it supplies the chrome and the design language; page content is drawn by
+the view JS of `luci-mod-*`. The one exception is `fs-overview.js`, which draws no content of its own
+and only re-arranges the stock overview sections.
 
-<img src="assets/readme/appearance-dark.png" width="100%" alt="The Footstrap tab on System → System: layout, theme, palette, density and rounding; the colour fields for accent, the status colours and the surfaces, each with the contrast it lands at in words; the wallpaper picker with the cats doodle behind the page; and Save as default next to the two resets.">
+## Layout
 
-</details>
-
-## Install
-
-```sh
-wget -qO- https://raw.githubusercontent.com/VizzleTF/luci-theme-footstrap/main/install.sh | sh
+```
+Makefile                          luci.mk; LUCI_MINIFY_CSS:=0; Build/Prepare (CSS, mangle, strip,
+                                  version, po2lmo)
+styles/                           CSS SOURCE: layers tokens / base / theme / pages
+build-css.sh                      styles/ → htdocs/luci-static/footstrap/cascade.css
+mangle-tokens.sh                  shorten the private --fs-* names in a built sheet
+strip-templates.sh strip-shell.sh drop comments from .ut and from root/**.sh
+po/                               translation catalogue (Weblate translates this)
+ucode/template/themes/footstrap/  header.ut, footer.ut, sysauth.ut, partials/
+htdocs/luci-static/footstrap/     cascade.css (generated), logo.svg — no webfonts, and no
+                                  wallpaper: the Pattern is one the admin uploads, and a font
+                                  is one the admin installs (repo: fonts/set-font.sh)
+htdocs/luci-static/resources/     menu-footstrap.js (renderer), menu-footstrap-common.js,
+                                  fs-{fit,menutree,prefs,widgets,chrome,router,sheets,search,
+                                  select,appearance,version,overview}.js
+root/etc/uci-defaults/            registration and legacy-name migration
+root/usr/share/rpcd/acl.d/        ACL: uci footstrap (Save as default) + login-background upload
 ```
 
-The script adds its own package feed and installs from it. After that the theme upgrades with the
-router: `apk update && apk upgrade` (or `opkg`). Running it again upgrades the theme and prints what
-it did — installed, upgraded from which version, or already current.
+There is no update checker: the theme is installed from the package feed (`install.sh` adds it), so
+`apk upgrade` / `opkg upgrade` carries it forward like everything else on the router. The Footstrap
+tab shows the version it is running and makes no network call to do it.
 
-`raw.githubusercontent.com` is rate-limited per address, so if it answers 429 (a shared exit, CGNAT),
-the same script is attached to every release and served from a CDN with no such budget — signed, so
-it can be checked before it is run:
+**Do not edit `cascade.css`** — it is generated by `build-css.sh` from `styles/` and is gitignored.
+Colours go in `styles/03-palettes.css`, scales and tokens in `styles/02-tokens.css`.
+
+## Working on a router
+
+The normal dev stand is four containers driven by `owlab` from `../owlab.yaml` — see
+[`../docs/development.md`](../docs/development.md). `dev-sync.sh` targets a **hardware** router over
+ssh:
 
 ```sh
-wget -qO- https://github.com/VizzleTF/luci-theme-footstrap/releases/latest/download/install.sh | sh
+./dev-sync.sh          # push to `ssh router` (registers the theme but does NOT activate it)
+ssh router 'uci set luci.main.mediaurlbase=/luci-static/footstrap; uci commit luci; rm -f /tmp/luci-indexcache*'
+ssh router 'uci set luci.main.mediaurlbase=/luci-static/bootstrap; uci commit luci'   # roll back
 ```
 
-Then pick **Footstrap** in **System → System → Language and Style**, field "Design".
-
-[More screenshots →](docs/screenshots/)
-
-## What it does
-
-- **Styles every page, stock or not** — but never overwrites what an app styles itself
-- **Works on a phone**, and installs to its home screen — icon, own window, no address bar
-- **Faster than bootstrap** — the numbers are below
-- **Upgrades with the router**, from the package feed
-- **Twenty-one appearance axes**, applied instantly, in one tab
-
-## Measured, not claimed
-
-Time to first paint, same router, same pages.
-
-| Page | bootstrap | footstrap |
-|---|---:|---:|
-| Wireless status | 271 ms | **54 ms** |
-| Interfaces | 374 ms | **111 ms** |
-| DNS | 329 ms | **108 ms** |
-| Firewall zones | 311 ms | **79 ms** |
-| 38-page run | 11 306 ms | **4933 ms** |
-| Requests/page | 15–47 | **0–7** |
-
-Median page **3.03× faster**, the whole run **2.29×**. Router CPU for the same tour: 37.3 s against
-**18.4 s**. Measured on real hardware, five runs — method and full data in
-[docs/benchmark.md](docs/benchmark.md).
-
-## Documentation
-
-Developer documentation is in **[docs/](docs/README.md)** — architecture, the design system, the
-stylesheet build, the SPA router, packaging, the release runbook. Start with
-[architecture.md](docs/architecture.md) for what the theme is, or
-[conventions.md](docs/conventions.md) for the rules a patch has to follow.
-
-Writing a `luci-app`? Read
-[how to style it so it works under any theme](docs/luci-app-styling-guide.md), and paste your CSS
-into the [devkit](https://vizzletf.github.io/luci-theme-footstrap/) — token grid, component markup,
-style checker.
+Before pushing, run `npm run check` from the repository root. The rules and the traps are in
+[`../docs/conventions.md`](../docs/conventions.md); packaging is in
+[`../docs/package.md`](../docs/package.md).
