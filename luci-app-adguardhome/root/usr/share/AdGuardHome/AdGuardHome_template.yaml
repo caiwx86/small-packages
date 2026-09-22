@@ -1,6 +1,7 @@
-#提交就可以直接用的配置模板文件。 user: root/password: root
-#a template config can be use with a apply. user: root/password: root
-
+# 模板用户名为 admin 密码为 admin
+# The username is admin and the password is admin.
+# 保存并应用就可以直接用的配置模板文件
+# a template config can be use with a apply
 http:
   pprof:
     port: 6060
@@ -8,8 +9,8 @@ http:
   address: 0.0.0.0:3000
   session_ttl: 720h
 users:
-  - name: root
-    password: $2y$10$dwn0hTYoECQMZETBErGlzOId2VANOVsPHsuH13TM/8KnysM5Dh/ve
+  - name: admin
+    password: $2y$10$iGkTW98QtGEZn4I/GC0J4eQhfuLQ53v7L4DDVauEJyWylJrXWwWeO
 auth_attempts: 5
 block_auth_min: 15
 http_proxy: ""
@@ -18,20 +19,26 @@ theme: auto
 dns:
   bind_hosts:
     - 0.0.0.0
-  port: 1745
+  port: 3053
   anonymize_client_ip: false
-  ratelimit: 0
+  ratelimit: 20
+  ratelimit_subnet_len_ipv4: 24
+  ratelimit_subnet_len_ipv6: 56
   ratelimit_whitelist: []
-  refuse_any: false
+  refuse_any: true
   upstream_dns:
-  - 223.5.5.5
+    - https://dns.cloudflare.com/dns-query
+    - '#'
+    - '# 对 ts.net 相关域名启用 DNS 分流, 交由 Tailscale 解析, 如不使用 Tailscale 可以删除.'
+    - '# Enable DNS conditional forwarding for ts.net via Tailscale; remove if Tailscale is not used.'
+    - '[/ts.net/]100.100.100.100'
   upstream_dns_file: ""
   bootstrap_dns:
-  - 119.29.29.29
-  - 223.5.5.5
-  fallback_dns: []
-  all_servers: false
-  fastest_addr: false
+    - 1.1.1.1
+    - 1.0.0.1
+  fallback_dns:
+    - quic://dns.adguard-dns.com
+  upstream_mode: parallel
   fastest_timeout: 1s
   allowed_clients: []
   disallowed_clients: []
@@ -42,10 +49,13 @@ dns:
   trusted_proxies:
     - 127.0.0.0/8
     - ::1/128
+  cache_enabled: true
   cache_size: 4194304
   cache_ttl_min: 0
   cache_ttl_max: 0
   cache_optimistic: false
+  cache_optimistic_answer_ttl: 30s
+  cache_optimistic_max_age: 12h
   bogus_nxdomain: []
   aaaa_disabled: false
   enable_dnssec: false
@@ -67,6 +77,9 @@ dns:
   serve_http3: false
   use_http3_upstreams: false
   serve_plain_dns: true
+  hostsfile_enabled: true
+  pending_requests:
+    enabled: true
 tls:
   enabled: false
   server_name: ""
@@ -83,24 +96,22 @@ tls:
   private_key_path: ""
   strict_sni_check: false
 querylog:
+  dir_path: ""
   ignored: []
-  interval: 24h
+  interval: 2160h
   size_memory: 1000
   enabled: true
   file_enabled: true
 statistics:
+  dir_path: ""
   ignored: []
-  interval: 720h
+  interval: 24h
   enabled: true
 filters:
   - enabled: true
-    url: https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
     name: AdGuard DNS filter
     id: 1
-  - enabled: true
-    url: https://anti-ad.net/easylist.txt
-    name: 'CHN: anti-AD'
-    id: 2
 whitelist_filters: []
 user_rules: []
 dhcp:
@@ -125,13 +136,14 @@ filtering:
   blocking_ipv6: ""
   blocked_services:
     schedule:
-      time_zone: Local
+      time_zone: UTC
     ids: []
   protection_disabled_until: null
   safe_search:
     enabled: false
     bing: true
     duckduckgo: true
+    ecosia: true
     google: true
     pixabay: true
     yandex: true
@@ -140,6 +152,8 @@ filtering:
   parental_block_host: family-block.dns.adguard.com
   safebrowsing_block_host: standard-block.dns.adguard.com
   rewrites: []
+  safe_fs_patterns:
+    - /tmp/AdGuardHome/userfilters/*
   safebrowsing_cache_size: 1048576
   safesearch_cache_size: 1048576
   parental_cache_size: 1048576
@@ -147,6 +161,7 @@ filtering:
   filters_update_interval: 24
   blocked_response_ttl: 10
   filtering_enabled: true
+  rewrites_enabled: true
   parental_enabled: false
   safebrowsing_enabled: false
   protection_enabled: true
@@ -159,6 +174,7 @@ clients:
     hosts: true
   persistent: []
 log:
+  enabled: true
   file: ""
   max_backups: 0
   max_size: 100
@@ -170,4 +186,4 @@ os:
   group: ""
   user: ""
   rlimit_nofile: 0
-schema_version: 27
+schema_version: 32

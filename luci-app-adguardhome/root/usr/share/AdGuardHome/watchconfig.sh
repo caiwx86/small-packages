@@ -1,4 +1,5 @@
 #!/bin/sh
+
 PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 configpath=$(uci get AdGuardHome.AdGuardHome.configpath)
 while :
@@ -9,4 +10,4 @@ do
 		break
 	fi
 done
-return 0
+exit 0
