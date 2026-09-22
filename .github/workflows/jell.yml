@@ -162,7 +162,8 @@ jobs:
         git_clone https://github.com/eamonxg/luci-theme-shadcn
         git_clone https://github.com/eamonxg/luci-theme-aurora
         git_clone https://github.com/eamonxg/luci-app-aurora-config
-        git_clone https://github.com/VizzleTF/luci-theme-footstrap
+        git_sparse_clone main https://github.com/VizzleTF/luci-theme-footstrap \
+              luci-theme-footstrap
         git_clone https://github.com/sirpdboy/luci-app-chatgpt-web
         git_clone https://github.com/sirpdboy/luci-app-eqosplus
         git_sparse_clone master "https://github.com/coolsnowwolf/lede" package/wwan package/lean package/network/services/shellsync package/qca/shortcut-fe && cp -rf wwan/*/* ./ ; rm -Rf wwan
