@@ -159,6 +159,7 @@ jobs:
               npc luci-app-npc
         git_sparse_clone main https://github.com/smallprogram/openwrt-ghfu \
               luci-app-ghfu
+        git_clone https://github.com/svenshi/luci-app-oxidns
         git_clone https://github.com/eamonxg/luci-theme-shadcn
         git_clone https://github.com/eamonxg/luci-theme-aurora
         git_clone https://github.com/eamonxg/luci-app-aurora-config
