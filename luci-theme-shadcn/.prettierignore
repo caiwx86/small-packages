@@ -1,8 +1,0 @@
-.dev/node_modules/
-.dev/.env
-.dev/pnpm-lock.yaml
-.dev/src/media/_tokens.css
-.superpowers/
-docs/superpowers/
-htdocs/
-tmp/
