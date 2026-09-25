@@ -74,12 +74,6 @@ define Package/oxidns/install
 
 	$(INSTALL_DIR) $(1)/etc/oxidns
 	$(INSTALL_CONF) ./files/config.yaml $(1)/etc/oxidns/config.yaml
-
-	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./files/oxidns.init $(1)/etc/init.d/oxidns
-
-	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_CONF) ./files/oxidns.uci $(1)/etc/config/oxidns
 endef
 
 define Package/oxidns-webui/install

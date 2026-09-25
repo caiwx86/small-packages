@@ -1,4 +1,0 @@
-config oxidns 'main'
-	option enabled '0'
-	option log_level 'info'
-	option config '/etc/oxidns/config.yaml'
