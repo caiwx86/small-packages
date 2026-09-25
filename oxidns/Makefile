@@ -28,9 +28,13 @@ define Package/oxidns
   CATEGORY:=Network
   SUBMENU:=DNS
   TITLE:=OxiDNS - High-performance DNS Engine
-  DESCRIPTION:=A high-performance, programmable DNS engine in Rust with flexible pipeline-based routing
   DEPENDS:=
   URL:=https://github.com/svenshi/oxidns
+endef
+
+define Package/oxidns/description
+  A high-performance, programmable DNS engine in Rust with flexible
+  pipeline-based routing.
 endef
 
 define Package/oxidns-webui
@@ -38,9 +42,12 @@ define Package/oxidns-webui
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=DNS
-  TITLE+= oxidns webui
-  DESCRIPTION:=A webui for oxidns server.
+  TITLE+= webui
   DEPENDS:=+oxidns
+endef
+
+define Package/oxidns-webui/description
+  A web UI for the OxiDNS server.
 endef
 
 define Package/oxidns/conffiles
@@ -49,7 +56,7 @@ endef
 
 define Build/Prepare
 	$(call Build/Prepare/Default)
-	
+
 ifneq ($(CONFIG_PACKAGE_oxidns-webui),)
 	(cd $(PKG_BUILD_DIR)/webui && \
 		npx -y pnpm install --ignore-scripts && \
@@ -64,13 +71,13 @@ endef
 define Package/oxidns/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/target/$(RUSTC_TARGET_ARCH)/release/oxidns $(1)/usr/bin/
-	
+
 	$(INSTALL_DIR) $(1)/etc/oxidns
 	$(INSTALL_CONF) ./files/config.yaml $(1)/etc/oxidns/config.yaml
-	
+
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/oxidns.init $(1)/etc/init.d/oxidns
-	
+
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/oxidns.uci $(1)/etc/config/oxidns
 endef
