@@ -1,0 +1,9 @@
+#!/bin/sh
+
+[ -n "$(lsmod | grep mtkhnat)" ] && \
+	uci set turboacc.config.sw_flow='0' && \
+	uci set turboacc.config.hw_flow='0'
+
+uci commit turboacc
+
+exit 0
