@@ -1,6 +1,0 @@
-#!/bin/sh
-
-mkdir /opt
-
-rm -f /tmp/luci-indexcache*
-exit 0
