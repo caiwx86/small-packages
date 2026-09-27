@@ -19,11 +19,10 @@ PKG_MAINTAINER:=Sven Shi <isvenshi@gmail.com>
 PKG_CONFIG_DEPENDS:=CONFIG_PACKAGE_oxidns-webui
 
 # rust 是编译 oxidns 本体必需；node/npm 只在需要构建 webui 时才依赖
-PKG_BUILD_DEPENDS:=rust/host PACKAGE_oxidns-webui:node/host PACKAGE_oxidns-webui:npm/host
+PKG_BUILD_DEPENDS:=rust/host PACKAGE_oxidns-webui:node/host
 PKG_BUILD_PARALLEL:=1
 
-# webui 前端构建产物目录（Vite 默认 dist，若是 out 请改这里）
-WEBUI_DIST:=dist
+WEBUI_DIST:=out
 
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/rust/rust-package.mk
