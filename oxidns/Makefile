@@ -17,11 +17,20 @@ PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=Sven Shi <isvenshi@gmail.com>
 
 PKG_CONFIG_DEPENDS:=CONFIG_PACKAGE_oxidns-webui
-PKG_BUILD_DEPENDS:=rust/host PACKAGE_oxidns-webui:node/host
+
+# rust 是编译 oxidns 本体必需；node/npm 只在需要构建 webui 时才依赖
+PKG_BUILD_DEPENDS:=rust/host PACKAGE_oxidns-webui:node/host PACKAGE_oxidns-webui:npm/host
 PKG_BUILD_PARALLEL:=1
+
+# webui 前端构建产物目录（Vite 默认 dist，若是 out 请改这里）
+WEBUI_DIST:=dist
 
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/rust/rust-package.mk
+
+# ---------------------------------------------------------------------------
+# Package 定义
+# ---------------------------------------------------------------------------
 
 define Package/oxidns
   SECTION:=net
@@ -42,7 +51,7 @@ define Package/oxidns-webui
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=DNS
-  TITLE+= webui
+  TITLE:=OxiDNS - Web UI
   DEPENDS:=+oxidns
 endef
 
@@ -54,19 +63,49 @@ define Package/oxidns/conffiles
 /etc/oxidns/config.yaml
 endef
 
+# ---------------------------------------------------------------------------
+# Prepare：仅做源码解压与补丁
+# ---------------------------------------------------------------------------
+
 define Build/Prepare
 	$(call Build/Prepare/Default)
-
-ifneq ($(CONFIG_PACKAGE_oxidns-webui),)
-	(cd $(PKG_BUILD_DIR)/webui && \
-		npx -y pnpm install --ignore-scripts && \
-		npx -y pnpm build)
-endif
 endef
+
+# ---------------------------------------------------------------------------
+# Configure
+# ---------------------------------------------------------------------------
+
+define Build/Configure
+	$(call Build/Configure/Default)
+endef
+
+# ---------------------------------------------------------------------------
+# Compile：先编译 Rust，再构建前端（若选中 webui）
+# 用 shell 判断而不是 Makefile 的 ifneq，避免配方在解析期被固定
+# ---------------------------------------------------------------------------
 
 define Build/Compile
 	$(call Build/Compile/Cargo,,--features full)
+
+	if [ -n "$(CONFIG_PACKAGE_oxidns-webui)" ]; then \
+		echo "===> Building OxiDNS webui ..."; \
+		cd $(PKG_BUILD_DIR)/webui || { echo "webui dir missing"; exit 1; }; \
+		if [ ! -f package.json ]; then \
+			echo "ERROR: webui/package.json not found"; exit 1; \
+		fi; \
+		npx -y pnpm install --ignore-scripts || { echo "pnpm install failed"; exit 1; }; \
+		npx -y pnpm build || { echo "pnpm build failed"; exit 1; }; \
+		if [ ! -d "$(WEBUI_DIST)" ]; then \
+			echo "ERROR: webui build output '$(WEBUI_DIST)' not found"; \
+			ls -la; exit 1; \
+		fi; \
+		echo "===> webui build OK: $(WEBUI_DIST)"; \
+	fi
 endef
+
+# ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
 
 define Package/oxidns/install
 	$(INSTALL_DIR) $(1)/usr/bin
@@ -77,8 +116,8 @@ define Package/oxidns/install
 endef
 
 define Package/oxidns-webui/install
-	$(INSTALL_DIR) $(1)/usr/share/oxidns
-	$(CP) $(PKG_BUILD_DIR)/webui/out $(1)/usr/share/oxidns/webui
+	$(INSTALL_DIR) $(1)/usr/share/oxidns/webui
+	$(CP) $(PKG_BUILD_DIR)/webui/$(WEBUI_DIST)/. $(1)/usr/share/oxidns/webui/
 endef
 
 $(eval $(call BuildPackage,oxidns))
