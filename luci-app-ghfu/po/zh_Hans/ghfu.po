@@ -1,0 +1,272 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "GitHub Firmware Upgrade"
+msgstr "GitHub 固件升级"
+
+msgid "Firmware upgrade assistant based on GitHub Release."
+msgstr "基于 GitHub Release 的固件升级助手。"
+
+msgid "Basic Configuration"
+msgstr "基础配置"
+
+msgid "GitHub Repository"
+msgstr "GitHub 仓库"
+
+msgid "Firmware Fuzzy Search"
+msgstr "模糊检索固件"
+
+msgid "Enter keyword to filter firmware names"
+msgstr "输入关键字筛选固件名"
+
+msgid "Release/Firmware"
+msgstr "Release/固件"
+
+msgid "Keep Configuration"
+msgstr "保留配置升级"
+
+msgid "System and Release Status"
+msgstr "系统与 Release 状态"
+
+msgid "Available Firmware"
+msgstr "可选固件"
+
+msgid "Available Firmware (Filtered: %d)"
+msgstr "可选固件(过滤后: %d个)"
+
+msgid "Last Updated Firmware"
+msgstr "上次更新的固件"
+
+msgid "Filter Valid Extensions"
+msgstr "过滤合法扩展名"
+
+msgid "Valid Extensions"
+msgstr "合法扩展名配置"
+
+msgid "Valid Firmware Extensions"
+msgstr "合法固件扩展名配置"
+
+msgid "One extension per line (e.g. .img  .img.gz)"
+msgstr "每行一个扩展名，例如 .img  .img.gz"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Saving extensions..."
+msgstr "正在保存扩展名配置..."
+
+msgid "Extensions saved"
+msgstr "扩展名配置已保存"
+
+msgid "Logs"
+msgstr "日志"
+
+msgid "Fetch Latest Release"
+msgstr "获取最新 Release"
+
+msgid "Download and Upgrade System"
+msgstr "下载并升级系统"
+
+msgid "Waiting to fetch latest release"
+msgstr "等待获取最新 Release"
+
+msgid "No matching firmware"
+msgstr "没有匹配的固件"
+
+msgid "Fetching latest release"
+msgstr "正在获取最新 Release"
+
+msgid "Fetch failed"
+msgstr "获取失败"
+
+msgid "Request failed: "
+msgstr "请求失败: "
+
+msgid "Latest release: "
+msgstr "最新 Release: "
+
+msgid "Status updated"
+msgstr "状态已更新"
+
+msgid "No new firmware currently, firmware selection is disabled"
+msgstr "当前没有更新固件，已停止后续固件选择"
+
+msgid "System install time"
+msgstr "系统安装时间"
+
+msgid "Latest release"
+msgstr "最新 Release"
+
+msgid "Published time"
+msgstr "发布时间"
+
+msgid "Assets total"
+msgstr "Assets总数"
+
+msgid "Conclusion"
+msgstr "结论"
+
+msgid "Fetching in progress"
+msgstr "正在获取中"
+
+msgid "Failed to fetch GitHub release"
+msgstr "获取github release失败"
+
+msgid "Please select firmware to upgrade"
+msgstr "请选择要升级的固件"
+
+msgid "Please select a firmware asset"
+msgstr "请选择固件下载项"
+
+msgid "Preparing upgrade: "
+msgstr "准备开始升级: "
+
+msgid "Upgrade command started, device may reboot soon"
+msgstr "升级命令已启动，设备可能会很快重启"
+
+msgid "Upgrade request failed: "
+msgstr "升级请求失败: "
+
+msgid "Selected firmware: "
+msgstr "已选择固件: "
+
+msgid "unknown"
+msgstr "未知"
+
+msgid "Failed to fetch GitHub release data"
+msgstr "无法获取 GitHub Release 数据"
+
+msgid "Failed to parse GitHub API response"
+msgstr "GitHub 返回数据解析失败"
+
+msgid "GitHub API error: "
+msgstr "GitHub API 错误: "
+
+msgid "GitHub repository cannot be empty"
+msgstr "GitHub 仓库不能为空"
+
+msgid "New firmware is available"
+msgstr "检测到新固件，可升级"
+
+msgid "No firmware newer than current system was found"
+msgstr "当前系统为最新状态，没有更新的必要"
+
+msgid "Invalid firmware URL, only https is supported"
+msgstr "固件下载地址非法，仅支持 https"
+
+msgid "Downloading firmware: "
+msgstr "正在下载固件: "
+
+msgid "Download progress: "
+msgstr "下载进度: "
+
+msgid "Speed: "
+msgstr "速率: "
+
+msgid "Download finished: "
+msgstr "下载完成: "
+
+msgid " downloaded successfully"
+msgstr " 下载成功"
+
+msgid "Invalid firmware file name"
+msgstr "固件文件名非法"
+
+msgid "Firmware file not found, please download again"
+msgstr "固件文件未找到，请重新下载"
+
+msgid "Starting system upgrade"
+msgstr "开始升级系统"
+
+msgid "Backup failed"
+msgstr "备份失败"
+
+msgid "Download Backup"
+msgstr "下载备份"
+
+msgid "Upgrading System"
+msgstr "正在升级系统"
+
+msgid "System is upgrading, please wait. The page will reload automatically when the system comes back online."
+msgstr "系统正在升级，请稍候。系统上线后页面将自动刷新。"
+
+msgid "Firmware Download Completed"
+msgstr "固件下载完成"
+
+msgid "Firmware is ready. System upgrade will start in %d seconds. Please do not leave this page."
+msgstr "固件已就绪，系统将在 %d 秒后开始升级。请勿离开当前页面。"
+
+msgid "Starting download: "
+msgstr "开始下载: "
+
+msgid "System upgrade will start in "
+msgstr "系统将在 "
+
+msgid " seconds"
+msgstr " 秒后开始升级"
+
+msgid "Starting system upgrade..."
+msgstr "正在启动系统升级..."
+
+msgid "Upgrade mode: keep configuration"
+msgstr "本次升级: 保留配置"
+
+msgid "Upgrade mode: do not keep configuration"
+msgstr "本次升级: 不保留配置"
+
+msgid "Fetch Timeout (seconds)"
+msgstr "获取超时（秒）"
+
+msgid "5 ~ 300 seconds. Limits GitHub API fetch time."
+msgstr "5 ~ 300 秒，限制 GitHub API 获取时间。"
+
+msgid "Unable to fetch GitHub Release, please check your network connection"
+msgstr "无法获取 GitHub Release，请检查网络连接"
+
+msgid "Read Latest Release Notes"
+msgstr "阅读最新的更新说明"
+
+msgid "Latest Release Notes"
+msgstr "最新更新说明"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "No release notes content available"
+msgstr "暂无更新说明内容"
+
+msgid "Latest release assets are not ready yet, using previous release with available firmware."
+msgstr "最新 Release 固件尚未上传完成，已自动使用上一个可用固件的 Release。"
+
+msgid "Latest release partial firmware may still be compiling, waiting to upload, or failed to compile. If your platform is missing, please wait for the next build result."
+msgstr "最新 Release 的部分固件可能仍在编译、等待上传或编译失败，如缺少你的平台，请等待下次编译结果。"
+
+msgid "Firmware download failed, please check network or GitHub repository"
+msgstr "固件下载失败，请检查网络或 GitHub 仓库"
+
+msgid "Save Basic Configuration"
+msgstr "保存基础配置"
+
+msgid "Saving basic configuration..."
+msgstr "正在保存基础配置..."
+
+msgid "Basic configuration saved"
+msgstr "基础配置已保存"
+
+msgid "Upgrade workflow is running, please wait until current operation finishes"
+msgstr "升级流程正在执行，请等待当前操作完成"
+
+msgid "SHA256 verification passed: "
+msgstr "SHA256 校验通过："
+
+msgid "SHA256 verification failed, upgrade cancelled"
+msgstr "SHA256 校验失败，已取消升级"
+
+msgid "  Expected: "
+msgstr "  期望值："
+
+msgid "  Got:      "
+msgstr "  实际值："
