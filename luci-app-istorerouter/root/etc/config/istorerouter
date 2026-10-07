@@ -1,3 +1,0 @@
-config istorerouter
-	option 'enabled' '1'
-	option 'model'  'router'
