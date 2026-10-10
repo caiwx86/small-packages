@@ -6,7 +6,7 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/svenshi/oxidns.git
-PKG_SOURCE_DATE:=2026-10-08
+PKG_SOURCE_DATE:=2026-10-10
 PKG_SOURCE_VERSION:=f9019c6f823731f7bd090102aa31327dafdecbf4
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE:=$(PKG_SOURCE_SUBDIR).tar.zst
@@ -104,6 +104,9 @@ endef
 
 # ---------------------------------------------------------------------------
 # Install
+# files/seed 由 GitHub Actions 根据 files/config.yaml 的 downloads 列表生成，
+# 内含首次启动所需的规则文件（antiad.txt / geosite.dat / geoip.dat 等），
+# 目录结构与 downloads 中的 dir 一致，直接按原路径安装
 # ---------------------------------------------------------------------------
 
 define Package/oxidns/install
@@ -112,6 +115,10 @@ define Package/oxidns/install
 
 	$(INSTALL_DIR) $(1)/etc/oxidns
 	$(INSTALL_CONF) ./files/config.yaml $(1)/etc/oxidns/config.yaml
+
+	if [ -d ./files/seed ]; then \
+		$(CP) ./files/seed/. $(1)/; \
+	fi
 endef
 
 define Package/oxidns-webui/install

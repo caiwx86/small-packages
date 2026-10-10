@@ -5,6 +5,11 @@ on:
     # 每天 UTC 02:00 检查（北京时间 10:00）
     - cron: '0 2 * * *'
   workflow_dispatch:  # 允许手动触发
+    inputs:
+      refresh_rules:
+        description: '即使版本没变也重新下载首启规则文件（files/seed）'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -94,18 +99,78 @@ jobs:
             "${{ steps.upstream.outputs.new_version }}" \
             "${{ steps.tag_commit.outputs.commit_hash }}"
 
+      # ----------------------------------------------------------------------
+      # 解决首次启动时缺少 antiad.txt / geosite.dat / geoip.dat 等规则文件的问题：
+      # 读取 files/config.yaml 中 download 插件的 downloads 列表（url / dir / filename），
+      # 把这些文件预先下载到 files/seed/<dir>/<filename>，随包一起安装，
+      # 这样首次启动时规则文件已经存在，不依赖 oxidns 自己联网下载。
+      # 仅在版本更新或手动勾选 refresh_rules 时执行，避免每天提交大文件。
+      # ----------------------------------------------------------------------
+      - name: Seed rule files from files/config.yaml
+        if: steps.compare.outputs.update_needed == 'true' || github.event.inputs.refresh_rules == 'true'
+        run: |
+          set -euo pipefail
+
+          CONF=files/config.yaml
+          if [ ! -f "$CONF" ]; then
+            echo "::error::$CONF not found"
+            exit 1
+          fi
+
+          mapfile -t ITEMS < <(yq -o=json '.' "$CONF" | jq -r '
+            .plugins[]? | select(.type == "download") | .args.downloads[]?
+            | [ .url,
+                (.dir // "/etc/oxidns/rules"),
+                (.filename // (.url | split("/") | last)) ]
+            | @tsv')
+
+          if [ "${#ITEMS[@]}" -eq 0 ]; then
+            echo "::error::No download entries found in $CONF"
+            exit 1
+          fi
+
+          rm -rf files/seed
+
+          for ITEM in "${ITEMS[@]}"; do
+            IFS=$'\t' read -r URL DIR NAME <<< "$ITEM"
+            DEST="files/seed/${DIR#/}"
+            mkdir -p "$DEST"
+
+            echo "Downloading ${URL} -> ${DEST}/${NAME}"
+            curl -fL --retry 3 --retry-delay 5 \
+              --connect-timeout 20 --max-time 300 \
+              -o "${DEST}/${NAME}" "${URL}"
+
+            if [ ! -s "${DEST}/${NAME}" ]; then
+              echo "::error::Downloaded file is empty: ${NAME}"
+              exit 1
+            fi
+          done
+
+          echo "Seed files:"
+          find files/seed -type f -exec ls -lh {} \;
+
       - name: Commit and push to current branch
-        if: steps.compare.outputs.update_needed == 'true'
+        if: steps.compare.outputs.update_needed == 'true' || github.event.inputs.refresh_rules == 'true'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add Makefile
+          if [ -d files/seed ]; then
+            git add -A files/seed
+          fi
 
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
 
-          git commit -m "oxidns: update to ${{ steps.upstream.outputs.new_version }} [skip ci]"
+          if [ "${{ steps.compare.outputs.update_needed }}" = "true" ]; then
+            MSG="oxidns: update to ${{ steps.upstream.outputs.new_version }} [skip ci]"
+          else
+            MSG="oxidns: refresh seed rule files [skip ci]"
+          fi
+
+          git commit -m "$MSG"
           git push origin "HEAD:${{ github.ref_name }}"
