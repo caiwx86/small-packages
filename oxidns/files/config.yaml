@@ -8,6 +8,13 @@
 #   5) HTTPS RR (qtype=65) → 返回空应答，让浏览器回退 A/AAAA
 #   6) 未分类域名 → 先问国内上游，是 CN IP 就用，否则交给 OpenClash
 #
+# v3 相对 v2 的改动：
+#   - 不含 PT/BT 专用规则（已取消）
+#   - 新增 network.outbound：规则下载等出站请求用国内 DNS 自行解析，
+#     不再依赖 oxiDNS 自己（解决重启/首次启动时"自己等自己"的问题）
+#   - 日志改放 /tmp，避免相对路径落到不确定目录以及写闪存
+#   - 去掉 oisd_big（与 Hagezi 大量重叠，下载源也最不稳定，省内存和更新时间）
+#
 # v2 相对 v1 的改动（速度 / 稳定性）：
 #   - 查询记录 SQLite 与国内缓存 dump 移到 /tmp（RAM），减少闪存写入，
 #     避免路由器 flash 磨损和 IO 卡顿；查询记录只保留 3 天
@@ -18,7 +25,7 @@
 
 log:
   level: info
-  file: ./oxidns.log
+  file: /tmp/oxidns.log
   rotation:
     type: daily
     max_files: 3
@@ -34,6 +41,21 @@ api:
     webui:
       root: /usr/share/oxidns/webui
       index: index.html
+
+# 出站请求（规则下载、升级检查等）使用的解析器与出口。
+# 这里直接指定国内 DNS，不经过本机 oxiDNS，避免启动/重启时下载失败。
+network:
+  outbound:
+    default: direct
+    profiles:
+      direct:
+        resolver:
+          nameservers:
+            - addr: "223.5.5.5:53"
+            - addr: "119.29.29.29:53"
+          ip_version: 4
+          timeout: 5s
+        proxy: none
 
 plugins:
   # ---------------------------------------------------------------------------
@@ -62,9 +84,6 @@ plugins:
         - url: https://anti-ad.net/adguard.txt
           dir: /etc/oxidns/rules
           filename: antiad.txt
-        - url: https://big.oisd.nl
-          dir: /etc/oxidns/rules
-          filename: oisd_big.txt
         - url: https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@main/adblock/ultimate.mini.txt
           dir: /etc/oxidns/rules
           filename: hagezi_ultimate_mini.txt
@@ -92,8 +111,6 @@ plugins:
       - $geoip_cn
       - $geosite_cn
       - $geosite_no_cn
-      - $geosite_pt
-      - $direct_custom
       - $ms_ncsi_white
 
   # ---------------------------------------------------------------------------
@@ -127,7 +144,6 @@ plugins:
     type: adguard_rule
     args:
       files:
-        - /etc/oxidns/rules/oisd_big.txt
         - /etc/oxidns/rules/hagezi_ultimate_mini.txt
         - /etc/oxidns/rules/hagezi_doh.txt
 
@@ -152,40 +168,6 @@ plugins:
       file: /etc/oxidns/rules/geosite.dat
       selectors:
         - geolocation-!cn
-
-  # PT 站点（geosite 的 category-pt 分类）
-  - tag: geosite_pt
-    type: geosite
-    args:
-      file: /etc/oxidns/rules/geosite.dat
-      selectors:
-        - category-pt
-
-  # 自定义"强制走国内解析"的域名：BT 公共 tracker、BT/磁力站点等
-  # 子域名自动包含；PT 站点没被 category-pt 收录时，往这里加即可
-  - tag: direct_custom
-    type: domain_set
-    args:
-      files: []
-      domains:
-        # --- BT 公共 tracker ---
-        - opentrackr.org
-        - openbittorrent.com
-        - demonii.com
-        - leechers-paradise.org
-        - coppersurfer.tk
-        - torrent.eu.org
-        - tiny-vps.com
-        - stealth.si
-        # --- BT / 动漫资源站 ---
-        - nyaa.si
-        - dmhy.org
-        - mikanani.me
-        - mikanime.tv
-        - bangumi.moe
-        - acg.rip
-        # --- 你自己的 PT 站点域名（示例，按需添加）---
-        # - example-pt.com
 
   - tag: ms_ncsi_white
     type: domain_set
@@ -362,12 +344,6 @@ plugins:
 
       - matches: qname $ms_ncsi_white     # 4) NCSI → 国内序列
         exec: goto ncsi_seq
-
-      # 4.5) PT / BT 站点 → 国内序列（放在广告规则之前，避免 tracker 被拦截规则误杀）
-      - matches: qname $geosite_pt
-        exec: goto local_seq
-      - matches: qname $direct_custom
-        exec: goto local_seq
 
       - matches: qname $ad_rules          # 5) 广告 → 黑洞
         exec: $ad_blackhole
