@@ -784,7 +784,7 @@ validate_candidate() {
 	mock_config=$temp_dir/shadow/etc/honk/config.dae
 	mock_log=$temp_dir/mock.log
 	response_file=$temp_dir/discovery.json
-	"$HONK_CORE" --config "$mock_config" --mock-ebpf --offline-validation > "$mock_log" 2>&1 &
+	DAE_LOCATION_ASSET=/usr/share/v2ray "$HONK_CORE" --config "$mock_config" --mock-ebpf --offline-validation > "$mock_log" 2>&1 &
 	mock_pid=$!
 	mock_ready=0
 	attempt=0
@@ -1056,7 +1056,7 @@ reset_data() {
 	checkpoint_sqlite || { restore_abort sqlite_checkpoint_failed; return 1; }
 	rm -rf "$reset_stage/etc/honk" || { restore_abort reset_stage_failed; return 1; }
 	stage_reset_tree "$HONK_ROOT" "$reset_stage/etc/honk" "$reset_candidate/etc/honk/system.dae" /usr/share/honk/default-config.dae || { restore_abort reset_stage_failed; return 1; }
-	"$HONK_CORE" --config "$reset_stage/etc/honk/config.dae" --data-dir "$reset_stage/etc/honk" admin reset-business --revision-root /etc/honk >/dev/null 2>&1 || { restore_abort state_reset_failed; return 1; }
+	DAE_LOCATION_ASSET=/usr/share/v2ray "$HONK_CORE" --config "$reset_stage/etc/honk/config.dae" --data-dir "$reset_stage/etc/honk" admin reset-business --revision-root /etc/honk >/dev/null 2>&1 || { restore_abort state_reset_failed; return 1; }
 	reset_archive_state=absent
 	if [ -f "$reset_stage/etc/honk/state/honk.db" ]; then reset_archive_state=present; fi
 	if [ "$reset_archive_state" = present ]; then archive_sqlite_check "$reset_stage/etc/honk/state/honk.db" || { restore_abort state_reset_validation_failed; return 1; }; fi

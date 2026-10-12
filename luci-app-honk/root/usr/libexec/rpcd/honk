@@ -65,7 +65,7 @@ status() {
 	if [ "$running" = 1 ] && honk_lifecycle_api_owned "$managed_pid"; then api_ready=1; else api_ready=0; fi
 	core_version=$($CORE --version 2>/dev/null | sed -n '1p')
 	[ -n "$core_version" ] || core_version=unknown
-	doona_version=$(jsonfilter -i /usr/share/honk/provenance.json -e '@.doona.version' 2>/dev/null)
+	doona_version=$(sed -n 's/^Version: //p' /usr/share/doona/SOURCE 2>/dev/null | head -n 1)
 	[ -n "$doona_version" ] || doona_version=unknown
 	kernel=$(uname -r)
 	errors=""

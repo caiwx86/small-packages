@@ -609,7 +609,7 @@ api_discovery() {
 mock_start() {
 	mock_config=$1
 	mock_log=$2
-	"$HONK_CORE" --config "$mock_config" --mock-ebpf > "$mock_log" 2>&1 &
+	DAE_LOCATION_ASSET=/usr/share/v2ray "$HONK_CORE" --config "$mock_config" --mock-ebpf > "$mock_log" 2>&1 &
 	mock_pid=$!
 	mock_identity=""
 	attempt=0
