@@ -5,13 +5,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=honk
-PKG_VERSION:=2026.10.10
-PKG_RELEASE:=2
+PKG_VERSION:=2026.10.12
+PKG_RELEASE:=1
 
 # Pinned honk-core revision (Glassyiris/honk feat/native-api), cross-compiled by
 # ci/build-core.sh. The per-architecture asset/hash are filled by that script;
 # keep a committed fallback so the feed still evaluates without a staging run.
-CORE_COMMIT:=eac5e0c5fba5078a7ff4517a3e3851e7fa0f4f8e
+CORE_COMMIT:=8b6778cefa12611492187ac2560f014452f0a64a
 
 -include $(CURDIR)/generated-stage.mk
 
@@ -40,7 +40,7 @@ PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=kenzok8
 
 PKG_SOURCE:=$(HONK_ASSET)
-PKG_SOURCE_URL:=https://github.com/kenzok8/openwrt-honk/releases/download/staging/
+PKG_SOURCE_URL?=https://github.com/kenzok8/openwrt-honk/releases/download/staging/
 PKG_HASH:=$(HONK_HASH)
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
