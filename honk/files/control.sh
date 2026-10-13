@@ -671,7 +671,6 @@ initialize_preflight() {
 	[ -x "$HONK_CORE" ] || { echo '{"ok":false,"message":"core_missing"}'; return 1; }
 	pidof honk-core >/dev/null 2>&1 && { echo '{"ok":false,"message":"core_already_running"}'; return 1; }
 	no_honk_resources || { echo '{"ok":false,"message":"honk_resources_already_exist"}'; return 1; }
-	check_conflicts || { echo '{"ok":false,"message":"conflicting_proxy_running"}'; return 1; }
 	check_port || { echo '{"ok":false,"message":"listen_port_occupied"}'; return 1; }
 	check_network || { echo '{"ok":false,"message":"lan_network_unavailable"}'; return 1; }
 	network_settings || { echo '{"ok":false,"message":"lan_ipv4_unavailable"}'; return 1; }
