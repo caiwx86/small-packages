@@ -305,7 +305,7 @@ write_runtime_system() {
 		printf "global {\n    wan_interface: auto\n    lan_interface: '%s'\n" "$lan_device"
 		printf "    log_level: info\n    dial_mode: domain\n    allow_insecure: false\n"
 		printf "    auto_config_kernel_parameter: true\n    data_dir: '/etc/honk'\n"
-		printf "    store_subscribe: false\n    nfqueue_enable: true\n}\n\n"
+		printf "    store_subscribe: true\n    nfqueue_enable: true\n}\n\n"
 		printf "experimental {\n    native_api {\n        enabled: true\n        listen: '%s:%s'\n" "$system_listen" "$system_port"
 		printf "        password_auth: true\n        allow_anonymous_loopback: false\n"
 		printf "        config_write: true\n        ui: '/usr/share/doona'\n    }\n}\n"

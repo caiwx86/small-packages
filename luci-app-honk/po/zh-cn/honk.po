@@ -615,14 +615,14 @@ msgstr "订阅无效或名称已存在。"
 msgid "The dae file contains invalid sections or unsupported includes."
 msgstr "dae 文件包含无效配置段或不支持的 include。"
 
-msgid "The imported configuration could not be parsed."
-msgstr "无法解析导入的配置。"
+msgid "Honk could not load the proposed configuration."
+msgstr "Honk 无法加载准备写入的配置。"
 
 msgid "The imported configuration failed core validation."
 msgstr "导入配置未通过核心程序校验。"
 
-msgid "Honk or Doona configuration changed after the preview. Create a new preview."
-msgstr "预览后 Honk 或 Doona 配置已更改，请重新预览。"
+msgid "Honk or Doona changed the configuration during this operation. Try again."
+msgstr "操作期间 Honk 或 Doona 修改了配置，请重试。"
 
 msgid "The preview expired. Create a new preview."
 msgstr "预览已过期，请重新预览。"
@@ -1158,11 +1158,20 @@ msgstr "Honk 从 /etc/honk/config.dae 读取节点、订阅和路由。"
 msgid "Add nodes as %s or subscriptions as %s in /etc/honk/config.dae, then reload Honk"
 msgstr "在 /etc/honk/config.dae 中以 %s 添加节点或以 %s 添加订阅，然后重载 Honk"
 
-msgid "Subscription added and Honk reloaded."
-msgstr "订阅已添加并重载 Honk。"
+msgid "The subscription returned no usable nodes. The configuration was not changed."
+msgstr "订阅没有返回可用节点，配置未改动。"
 
-msgid "Nodes added and Honk reloaded."
-msgstr "节点已添加并重载 Honk。"
+msgid "Subscription saved with usable nodes."
+msgstr "订阅已保存，检测到可用节点。"
+
+msgid "Nodes saved."
+msgstr "节点已保存。"
+
+msgid "Honk could not restart. The previous configuration and service were restored."
+msgstr "Honk 未能重启，已恢复原配置和服务。"
+
+msgid "Honk could not restart or restore the previous service. Check its status and backup."
+msgstr "Honk 未能重启，也未能恢复原服务，请检查服务状态和备份。"
 
 msgid "Configuration imported and Honk reloaded."
 msgstr "配置已导入并重载 Honk。"
@@ -1212,8 +1221,8 @@ msgstr "无法导入配置。"
 msgid "Import a native dae config.dae (e.g. exported from Tower). Its node block is merged into /etc/honk/config.dae."
 msgstr "导入原生 dae config.dae（例如 Tower 导出的）。其 node 块会合并到 /etc/honk/config.dae。"
 
-msgid "Routing, DNS and groups are managed in the Doona dashboard once Honk is started. You can also edit /etc/honk/config.dae directly."
-msgstr "Honk 启动后，路由、DNS 和分组可在 Doona 面板管理。也可以直接编辑 /etc/honk/config.dae。"
+msgid "After the first valid subscription or node import, the fresh-install policy sends local and Chinese traffic direct and other traffic through the proxy group. You can adjust it in Doona."
+msgstr "首次成功导入订阅或节点后，新装默认策略让局域网和国内流量直连，其余走代理组。之后可在 Doona 调整。"
 
 msgid "Could not add the subscription."
 msgstr "无法添加订阅。"
@@ -1227,8 +1236,8 @@ msgstr "无法写入配置文件。"
 msgid "The configuration file is missing."
 msgstr "配置文件不存在。"
 
-msgid "Enter a name and the subscription URL. Honk writes it into /etc/honk/config.dae, fetches the nodes and reloads."
-msgstr "输入名称和订阅链接，Honk 会写入 /etc/honk/config.dae、拉取节点并重载。"
+msgid "Enter a name and subscription URL. Honk checks for usable nodes before saving."
+msgstr "输入名称和订阅链接，Honk 会先检查是否有可用节点，再保存配置。"
 
 msgid "Invalid %s: must be an http(s) URL."
 msgstr "无效的 %s：必须是 http(s) 链接。"

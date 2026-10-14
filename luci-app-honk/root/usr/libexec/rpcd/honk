@@ -236,6 +236,139 @@ logs() {
 	rm -f "$log_file"
 }
 
+promote_default_route() {
+	local current=$1 candidate=$2 dns_block
+	if cmp -s "$current" /usr/share/honk/default-config.dae; then
+		sed 's/^    fallback: direct$/    fallback: proxy/' "$candidate" > "$candidate.route" || return 1
+	elif [ "$(sha256sum "$current" | awk '{print $1}')" = 83d1cc32bfe5b44ecae4b05c2c82c81ce9a36ab29f391d1e1d1d6b4993e17d2b ]; then
+		# The r1 package had only an include and a direct fallback. Preserve the
+		# newly added node or subscription while upgrading that exact default.
+		dns_block=$(sed -n '/^dns {$/,/^}$/p' /usr/share/honk/default-config.dae) || return 1
+		[ -n "$dns_block" ] || return 1
+		awk -v dns_block="$dns_block" '
+			/^routing[[:space:]]*\{$/ {
+				print "group {\n    proxy {\n        policy: min_moving_avg\n    }\n}\n"
+				print dns_block "\n"
+				print
+				print "    dip(224.0.0.0/3, \047ff00::/8\047) -> direct\n    dip(geoip: private) && !dport(53) -> direct(must)\n    dip(geoip: cn) && !dport(53) -> direct(must)\n    domain(geosite: cn) -> direct"
+				next
+			}
+			/^    fallback: direct$/ { print "    fallback: proxy"; next }
+			{ print }
+		' "$candidate" > "$candidate.route" || return 1
+	else
+		return 0
+	fi
+	mv "$candidate.route" "$candidate" || return 1
+}
+
+validate_proxy_nodes() (
+	local candidate=$1 provider_name=${2:-} node_prefix=${3:-} expected_nodes=${4:-0} temp port core_pid= attempt ready node_count group_count result provider
+	temp=$(mktemp -d /tmp/honk-onboard.XXXXXX) || return 1
+	validator_core_owned() {
+		[ -n "$core_pid" ] && [ -r "/proc/$core_pid/cmdline" ] || return 1
+		case "$(tr '\000' ' ' < "/proc/$core_pid/cmdline" 2>/dev/null)" in
+			*"$temp/config.dae"*--mock-ebpf*) [ "$(readlink -f "/proc/$core_pid/exe" 2>/dev/null)" = "$CORE" ] ;;
+			*) return 1 ;;
+		esac
+	}
+	validator_cleanup() {
+		if validator_core_owned; then
+			kill -TERM "$core_pid" 2>/dev/null || :
+			attempt=0
+			while validator_core_owned && [ "$attempt" -lt 3 ]; do sleep 1; attempt=$((attempt + 1)); done
+			if validator_core_owned; then
+				kill -KILL "$core_pid" 2>/dev/null || :
+				attempt=0
+				while validator_core_owned && [ "$attempt" -lt 2 ]; do sleep 1; attempt=$((attempt + 1)); done
+			fi
+			validator_core_owned && { logger -t honk "candidate core did not exit; retained $temp"; return 1; }
+		fi
+		[ -z "$core_pid" ] || wait "$core_pid" 2>/dev/null || :
+		rm -rf "$temp" || return 1
+		core_pid=
+		temp=
+	}
+	trap 'validator_cleanup' EXIT
+	trap 'exit 1' HUP INT TERM
+	port=$((20000 + $(hexdump -n 2 -e '1/2 "%u"' /dev/urandom) % 20000))
+	if ! cp -p /etc/honk/*.dae "$temp/" || ! cp "$candidate" "$temp/config.dae"; then
+		return 1
+	fi
+	cat > "$temp/system.dae" <<EOF
+global {
+    wan_interface: auto
+    lan_interface: ''
+    data_dir: '$temp'
+    tproxy_port: $((port + 20000))
+    nfqueue_enable: false
+    store_subscribe: true
+}
+experimental {
+    native_api {
+        enabled: true
+        listen: '127.0.0.1:$port'
+        password_auth: false
+        allow_anonymous_loopback: true
+        config_write: false
+    }
+}
+EOF
+	DAE_LOCATION_ASSET=/usr/share/v2ray "$CORE" --config "$temp/config.dae" --mock-ebpf > "$temp/core.log" 2>&1 &
+	core_pid=$!
+	ready=0
+	result=2
+	attempt=0
+	while [ "$attempt" -lt 25 ]; do
+		if ! kill -0 "$core_pid" 2>/dev/null; then result=1; break; fi
+		if curl -fsS --noproxy '*' --connect-timeout 1 --max-time 2 "http://127.0.0.1:$port/api/v1/nodes" -o "$temp/nodes.json" 2>/dev/null; then
+			ready=1
+			node_count=$(jsonfilter -i "$temp/nodes.json" -e '@.nodes[*].protocol' 2>/dev/null | awk '$1 != "direct" && $1 != "block" { count++ } END { print count+0 }')
+			if curl -fsS --noproxy '*' --connect-timeout 1 --max-time 2 "http://127.0.0.1:$port/api/v1/groups" -o "$temp/groups.json" 2>/dev/null; then
+				group_count=$(jsonfilter -i "$temp/groups.json" -e '@[*].member_count' 2>/dev/null | awk '{ count += $1 } END { print count+0 }')
+				if [ "$node_count" -gt 0 ] && [ "$group_count" -gt 0 ]; then
+					if [ -n "$node_prefix" ]; then
+						node_count=$(jsonfilter -i "$temp/nodes.json" -e '@.nodes[*].name' 2>/dev/null | awk -v prefix="$node_prefix" '$0 ~ "^" prefix "[0-9]+$" { count++ } END { print count+0 }')
+						if [ "$node_count" -eq "$expected_nodes" ]; then result=0; break; fi
+					elif [ -z "$provider_name" ]; then result=0; break; fi
+					if curl -fsS --noproxy '*' --connect-timeout 1 --max-time 2 "http://127.0.0.1:$port/api/v1/providers" -o "$temp/providers.json" 2>/dev/null &&
+						jsonfilter -i "$temp/providers.json" -e '@.providers[*]' > "$temp/providers.rows" 2>/dev/null; then
+						while IFS= read -r provider; do
+							[ "$(jsonfilter -s "$provider" -e '@.name' 2>/dev/null)" = "$provider_name" ] || continue
+							[ "$(jsonfilter -s "$provider" -e '@.kind' 2>/dev/null)" = subscription ] || continue
+							node_count=$(jsonfilter -s "$provider" -e '@.node_count' 2>/dev/null)
+							case "$node_count" in ''|*[!0-9]*) break ;; esac
+							if [ "$node_count" -gt 0 ]; then result=0; fi
+							break
+						done < "$temp/providers.rows"
+						[ "$result" = 0 ] && break
+					fi
+				fi
+			fi
+		fi
+		sleep 1
+		attempt=$((attempt + 1))
+	done
+	[ "$ready" = 1 ] || result=1
+	validator_cleanup || return 1
+	trap - EXIT HUP INT TERM
+	return "$result"
+)
+
+commit_validated_candidate() {
+	local cfg=$1 candidate=$2 was_running=0 restore
+	[ -n "$(honk_lifecycle_managed_pid 2>/dev/null)" ] && was_running=1
+	cp -p "$cfg" "$cfg.bak" || return 1
+	chmod 0600 "$candidate" && mv "$candidate" "$cfg" || return 1
+	[ "$was_running" = 1 ] || return 0
+	honk_lifecycle_restart 30 && return 0
+	restore=$(mktemp /etc/honk/.config.rollback.XXXXXX) || return 3
+	cp -p "$cfg.bak" "$restore" && mv "$restore" "$cfg" || { rm -f "$restore"; return 3; }
+	honk_lifecycle_stop 30 && honk_lifecycle_start 30 && return 2
+	logger -t honk "candidate restart and previous service restoration failed; inspect $cfg.bak"
+	return 3
+}
+
 add_subscription() {
 	request=$(cat)
 	json_load "$request" 2>/dev/null || { emit_result false invalid_request; return 1; }
@@ -252,39 +385,50 @@ add_subscription() {
 
 	cfg=/etc/honk/config.dae
 	[ -f "$cfg" ] || { emit_result false config_missing; return 1; }
+	begin_mutation
+	original_hash=$(sha256sum "$cfg" | awk '{print $1}')
 
 	if grep -qE "^[[:space:]]*${sub_name}:[[:space:]]*['\"]" "$cfg"; then
 		emit_result false subscription_invalid_or_conflicting
 		return 1
 	fi
 
-	cp -p "$cfg" "$cfg.bak" 2>/dev/null || true
+	candidate=$(mktemp /etc/honk/.config.dae.XXXXXX) || { emit_result false config_write_failed; return 1; }
 
 	if ! awk -v name="$sub_name" -v url="$sub_url" '
 		/^subscription[[:space:]]*\{/ {
 			print
-			printf "    %s: \047%s\047 {\n        interval: 0s\n        route: direct\n    }\n", name, url
+			printf "    %s: \047%s\047 {\n        interval: 86400s\n        route: direct\n    }\n", name, url
 			found = 1
 			next
 		}
 		{ print }
 		END {
 			if (!found) {
-				printf "\nsubscription {\n    %s: \047%s\047 {\n        interval: 0s\n        route: direct\n    }\n}\n", name, url
+				printf "\nsubscription {\n    %s: \047%s\047 {\n        interval: 86400s\n        route: direct\n    }\n}\n", name, url
 			}
 		}
-	' "$cfg" > "$cfg.tmp" 2>/dev/null; then
-		rm -f "$cfg.tmp"
+	' "$cfg" > "$candidate" 2>/dev/null; then
+		rm -f "$candidate"
 		emit_result false config_write_failed
 		return 1
 	fi
 
-	mv "$cfg.tmp" "$cfg" || { rm -f "$cfg.tmp"; emit_result false config_write_failed; return 1; }
-	chmod 0600 "$cfg" 2>/dev/null || true
-
-	if [ -n "$(honk_lifecycle_managed_pid 2>/dev/null)" ]; then
-		/etc/init.d/honk reload >/dev/null 2>&1 || :
-	fi
+	promote_default_route "$cfg" "$candidate" || { rm -f "$candidate" "$candidate.route"; emit_result false config_write_failed; return 1; }
+	validate_proxy_nodes "$candidate" "$sub_name"
+	case "$?" in
+		0) ;;
+		2) rm -f "$candidate"; emit_result false subscription_no_nodes; return 1 ;;
+		*) rm -f "$candidate"; emit_result false candidate_invalid; return 1 ;;
+	esac
+	[ "$(sha256sum "$cfg" | awk '{print $1}')" = "$original_hash" ] || { rm -f "$candidate"; emit_result false source_changed; return 1; }
+	commit_validated_candidate "$cfg" "$candidate"
+	case "$?" in
+		0) ;;
+		2) emit_result false reload_failed_rolled_back; return 1 ;;
+		3) emit_result false reload_and_rollback_failed; return 1 ;;
+		*) rm -f "$candidate"; emit_result false config_write_failed; return 1 ;;
+	esac
 
 	emit_result true subscription_added
 }
@@ -298,18 +442,22 @@ add_nodes() {
 
 	cfg=/etc/honk/config.dae
 	[ -f "$cfg" ] || { emit_result false config_missing; return 1; }
+	begin_mutation
+	original_hash=$(sha256sum "$cfg" | awk '{print $1}')
 
-	node_lines=$(printf '%s\n' "$node_links" | awk '
+	node_prefix="node_$(hexdump -n 4 -e '4/1 "%02x"' /dev/urandom)_"
+	node_lines=$(printf '%s\n' "$node_links" | awk -v prefix="$node_prefix" '
 		BEGIN { n = 0 }
 		{
 			if ($0 !~ /^(vless|vmess|ss|ssr|tuic|trojan|hysteria2|hy2|socks5|http|https):\/\//) next
 			n++
-			printf "    node_%03d: \047%s\047\n", n, $0
+			printf "    %s%03d: \047%s\047\n", prefix, n, $0
 		}
 		END { if (n == 0) exit 1 }
 	') || { emit_result false share_links_invalid_or_conflicting; return 1; }
+	added_nodes=$(printf '%s\n' "$node_lines" | awk 'END { print NR }')
 
-	cp -p "$cfg" "$cfg.bak" 2>/dev/null || true
+	candidate=$(mktemp /etc/honk/.config.dae.XXXXXX) || { emit_result false config_write_failed; return 1; }
 
 	if ! awk -v lines="$node_lines" '
 		/^[[:space:]]*node[[:space:]]*\{/ {
@@ -322,18 +470,27 @@ add_nodes() {
 		END {
 			if (!found) printf "\nnode {\n%s\n}\n", lines
 		}
-	' "$cfg" > "$cfg.tmp" 2>/dev/null; then
-		rm -f "$cfg.tmp"
+	' "$cfg" > "$candidate" 2>/dev/null; then
+		rm -f "$candidate"
 		emit_result false config_write_failed
 		return 1
 	fi
 
-	mv "$cfg.tmp" "$cfg" || { rm -f "$cfg.tmp"; emit_result false config_write_failed; return 1; }
-	chmod 0600 "$cfg" 2>/dev/null || true
-
-	if [ -n "$(honk_lifecycle_managed_pid 2>/dev/null)" ]; then
-		/etc/init.d/honk reload >/dev/null 2>&1 || :
-	fi
+	promote_default_route "$cfg" "$candidate" || { rm -f "$candidate" "$candidate.route"; emit_result false config_write_failed; return 1; }
+	validate_proxy_nodes "$candidate" "" "$node_prefix" "$added_nodes"
+	case "$?" in
+		0) ;;
+		2) rm -f "$candidate"; emit_result false share_links_invalid_or_conflicting; return 1 ;;
+		*) rm -f "$candidate"; emit_result false candidate_invalid; return 1 ;;
+	esac
+	[ "$(sha256sum "$cfg" | awk '{print $1}')" = "$original_hash" ] || { rm -f "$candidate"; emit_result false source_changed; return 1; }
+	commit_validated_candidate "$cfg" "$candidate"
+	case "$?" in
+		0) ;;
+		2) emit_result false reload_failed_rolled_back; return 1 ;;
+		3) emit_result false reload_and_rollback_failed; return 1 ;;
+		*) rm -f "$candidate"; emit_result false config_write_failed; return 1 ;;
+	esac
 
 	emit_result true nodes_added
 }

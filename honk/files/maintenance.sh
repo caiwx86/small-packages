@@ -424,7 +424,7 @@ load_uci_values() {
 	uci_show=$(uci_run -q show honk 2>/dev/null) || return 1
 	printf '%s\n' "$uci_show" | awk -F= '
 		/^honk\.main=/ { main++ ; next }
-		/^honk\.main\.(enabled|boot_enabled|initialized|config_file|listen_port|lan_network)=/ { next }
+		/^honk\.main\.(enabled|boot_enabled|initialized|config_file|listen_port|lan_network|geoip_url|geosite_url|geo_auto|geo_auto_freq)=/ { next }
 		/^honk\.main\./ { bad=1; next }
 		/^honk\.[A-Za-z0-9_.-]+=/ { bad=1; next }
 		END { exit (bad || main != 1) }
@@ -436,7 +436,10 @@ load_uci_values() {
 	u_config=$(get_uci config_file) || return 1
 	u_port=$(get_uci listen_port) || return 1
 	u_network=$(get_uci lan_network) || return 1
+	u_geo_auto=$(get_uci geo_auto 2>/dev/null || printf 0)
+	u_geo_auto_freq=$(get_uci geo_auto_freq 2>/dev/null || printf daily)
 	case "$u_enabled:$u_boot:$u_initialized" in 0:0:0|0:0:1|0:1:0|0:1:1|1:0:0|1:0:1|1:1:0|1:1:1) ;; *) return 1 ;; esac
+	case "$u_geo_auto:$u_geo_auto_freq" in 0:daily|0:weekly|1:daily|1:weekly) ;; *) return 1 ;; esac
 	[ "$u_config" = /etc/honk/config.dae ] || return 1
 	case "$u_port" in ''|*[!0-9]*) return 1 ;; esac
 	[ "$u_port" -ge 1024 ] && [ "$u_port" -le 65535 ] || return 1
@@ -550,6 +553,8 @@ validate_system_schema() {
 	[ "$listen_port" -ge 1024 ] && [ "$listen_port" -le 65535 ] || return 1
 	[ "$lan_iface" = "$expected_device" ] && [ "$listen_port" = "$expected_port" ] || return 1
 	[ "$listen_host" = "$expected_ip" ] || [ "$listen_host" = 127.0.0.1 ] || return 1
+	store_subscribe=$(sed -n 's/^    store_subscribe: \(true\|false\)$/\1/p' "$trusted_system")
+	case "$store_subscribe" in true|false) ;; *) return 1 ;; esac
 	cat > "$temp_dir/system.expected" <<EOF
 global {
     wan_interface: auto
@@ -559,7 +564,7 @@ global {
     allow_insecure: false
     auto_config_kernel_parameter: true
     data_dir: '/etc/honk'
-    store_subscribe: false
+    store_subscribe: $store_subscribe
     nfqueue_enable: true
 }
 
@@ -726,7 +731,7 @@ global {
     allow_insecure: false
     auto_config_kernel_parameter: true
     data_dir: '/etc/honk'
-    store_subscribe: false
+    store_subscribe: true
     nfqueue_enable: true
 }
 
@@ -746,7 +751,7 @@ EOF
 mock_identity_ok() {
 	[ -n "$mock_pid" ] && [ -r "/proc/$mock_pid/cmdline" ] || return 1
 	mock_identity=$(tr '\000' ' ' < "/proc/$mock_pid/cmdline" 2>/dev/null) || return 1
-	case "$mock_identity" in *"$mock_config"*--mock-ebpf*--offline-validation*) ;; *) return 1 ;; esac
+	case "$mock_identity" in *"$mock_config"*--mock-ebpf*) ;; *) return 1 ;; esac
 	[ "$(readlink -f "/proc/$mock_pid/exe" 2>/dev/null)" = "$HONK_CORE" ]
 }
 
@@ -784,7 +789,7 @@ validate_candidate() {
 	mock_config=$temp_dir/shadow/etc/honk/config.dae
 	mock_log=$temp_dir/mock.log
 	response_file=$temp_dir/discovery.json
-	DAE_LOCATION_ASSET=/usr/share/v2ray "$HONK_CORE" --config "$mock_config" --mock-ebpf --offline-validation > "$mock_log" 2>&1 &
+	DAE_LOCATION_ASSET=/usr/share/v2ray "$HONK_CORE" --config "$mock_config" --mock-ebpf > "$mock_log" 2>&1 &
 	mock_pid=$!
 	mock_ready=0
 	attempt=0

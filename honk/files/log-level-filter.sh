@@ -41,6 +41,7 @@ function from_syslog(header, token, parts, count, level) {
 		}
 	}
 	sub(/^[0-9][0-9][0-9][0-9]-[0-9T:.+Z-]+[[:space:]]+/, "", message)
+	sub(/^[[:space:]]+/, "", message)
 	if (match(message, /^(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|FATAL|CRIT|CRITICAL|ALERT|EMERG)([[:space:]:]|$)/)) {
 		level = message
 		sub(/[[:space:]:].*$/, "", level)

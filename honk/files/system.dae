@@ -6,7 +6,7 @@ global {
     allow_insecure: false
     auto_config_kernel_parameter: true
     data_dir: '/etc/honk'
-    store_subscribe: false
+    store_subscribe: true
     nfqueue_enable: true
 }
 

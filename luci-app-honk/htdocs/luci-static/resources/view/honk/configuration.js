@@ -135,7 +135,7 @@ return view.extend({
 			subBtn.disabled = true;
 			subStatus.textContent = _('Adding subscription…');
 			honk.addSubscription(name, url).then(honk.ensureOk).then(function(result) {
-				subStatus.textContent = honk.resultMessage(result, _('Subscription added and Honk reloaded.'));
+				subStatus.textContent = honk.resultMessage(result, _('Subscription saved with usable nodes.'));
 				nameInput.value = '';
 				urlInput.value = '';
 			}).catch(function(error) {
@@ -145,7 +145,7 @@ return view.extend({
 
 		const subSection = E('section', { 'class': 'honk-card' }, [
 			E('h3', { 'class': 'honk-card-title' }, _('Add subscription')),
-			E('p', { 'class': 'honk-note' }, _('Enter a name and the subscription URL. Honk writes it into /etc/honk/config.dae, fetches the nodes and reloads.')),
+			E('p', { 'class': 'honk-note' }, _('Enter a name and subscription URL. Honk checks for usable nodes before saving.')),
 			E('div', { 'class': 'honk-subscription-add' }, [ nameInput, urlInput, subBtn ]),
 			subStatus
 		]);
@@ -223,7 +223,7 @@ return view.extend({
 		/* --- Direct configuration note --- */
 		const note = E('section', { 'class': 'honk-card' }, [
 			E('h3', { 'class': 'honk-card-title' }, _('Direct configuration')),
-			E('p', { 'class': 'honk-note' }, _('Routing, DNS and groups are managed in the Doona dashboard once Honk is started. You can also edit /etc/honk/config.dae directly.'))
+			E('p', { 'class': 'honk-note' }, _('After the first valid subscription or node import, the fresh-install policy sends local and Chinese traffic direct and other traffic through the proxy group. You can adjust it in Doona.'))
 		]);
 
 		page.appendChild(subSection);

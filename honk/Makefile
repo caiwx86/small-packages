@@ -6,12 +6,12 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=honk
 PKG_VERSION:=2026.10.14
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 # Pinned honk-core revision (Glassyiris/honk feat/native-api), cross-compiled by
 # ci/build-core.sh. The per-architecture asset/hash are filled by that script;
 # keep a committed fallback so the feed still evaluates without a staging run.
-CORE_COMMIT:=9b9dbd8919ada1f3b249e177a04a2094a37cc366
+CORE_COMMIT:=2cca36a1170bbe03bb77c84d8a25b831f547901d
 
 -include $(CURDIR)/generated-stage.mk
 
