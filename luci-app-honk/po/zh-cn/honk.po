@@ -33,6 +33,9 @@ msgstr "无法读取 Honk 状态。"
 msgid "Could not save Honk settings."
 msgstr "无法保存 Honk 设置。"
 
+msgid "The curl command is missing. Install the curl package and try again."
+msgstr "缺少 curl 命令，请先安装 curl 包（apk add curl 或 opkg install curl）后重试。"
+
 msgid "Save failed. Check the settings and system status."
 msgstr "保存失败，请检查设置和系统状态。"
 

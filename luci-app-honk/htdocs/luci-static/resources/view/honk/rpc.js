@@ -189,6 +189,7 @@ function tokenMessage(token) {
 		dae_upload_changed: _('The uploaded dae file changed. Upload it again.'),
 		upload_unavailable: _('A private upload location could not be prepared.'),
 		settings_write_failed: _('Could not save Honk settings.'),
+		curl_missing: _('The curl command is missing. Install the curl package and try again.'),
 		start_failed: _('Honk could not start.'),
 		stop_failed: _('Honk could not stop.'),
 		restart_failed: _('Honk could not restart.'),

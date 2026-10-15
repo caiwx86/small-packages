@@ -472,6 +472,7 @@ diagnose() {
 	check_network >/dev/null 2>&1 || errors="$errors lan_network_unavailable"
 	network_settings >/dev/null 2>&1 || errors="$errors lan_ipv4_unavailable"
 	check_kernel >/dev/null 2>&1 || errors="$errors kernel_requirements_unmet"
+	command -v curl >/dev/null 2>&1 || errors="$errors curl_missing"
 	if [ "$running" != 1 ]; then
 		no_honk_resources >/dev/null 2>&1 || errors="$errors honk_resources_occupied"
 		pidof honk-core >/dev/null 2>&1 && errors="$errors unmanaged_core_running"
@@ -669,6 +670,7 @@ initialize_preflight() {
 		read_credentials || { echo '{"ok":false,"message":"invalid_credentials"}'; return 1; }
 	fi
 	[ -x "$HONK_CORE" ] || { echo '{"ok":false,"message":"core_missing"}'; return 1; }
+	command -v curl >/dev/null 2>&1 || { echo '{"ok":false,"message":"curl_missing"}'; return 1; }
 	pidof honk-core >/dev/null 2>&1 && { echo '{"ok":false,"message":"core_already_running"}'; return 1; }
 	no_honk_resources || { echo '{"ok":false,"message":"honk_resources_already_exist"}'; return 1; }
 	check_port || { echo '{"ok":false,"message":"listen_port_occupied"}'; return 1; }
