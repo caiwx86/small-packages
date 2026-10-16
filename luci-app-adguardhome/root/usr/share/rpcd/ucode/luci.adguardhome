@@ -1,0 +1,198 @@
+#!/usr/bin/ucode
+'use strict';
+
+import { stat, popen, readfile, writefile, unlink, lsdir } from 'fs';
+import { cursor } from 'uci';
+
+function shellQuote(value) {
+	return "'" + replace(value, /'/g, "'\\''") + "'";
+}
+
+return {
+	'luci.adguardhome': {
+		getManualConfig: {
+			call: function() {
+				const conf = cursor();
+				const configpath = conf.get('AdGuardHome', 'AdGuardHome', 'configpath') ||
+					'/etc/AdGuardHome.yaml';
+				conf.unload('AdGuardHome');
+
+				const template = readfile('/usr/share/AdGuardHome/AdGuardHome_template.yaml') || '';
+				const current = readfile(configpath);
+				if (current != null)
+					return { content: current, template: template, source: 'current' };
+				if (stat(configpath) != null)
+					return { content: '', template: template, source: 'error' };
+				return {
+					content: template,
+					template: template,
+					source: template ? 'template' : 'missing'
+				};
+			}
+		},
+		setManualConfig: {
+			args: { content: '' },
+			call: function(request) {
+				const content = request.args.content;
+				if (content == null)
+					return { saved: false, reason: 'invalid_content' };
+
+				const conf = cursor();
+				const configpath = conf.get('AdGuardHome', 'AdGuardHome', 'configpath') ||
+					'/etc/AdGuardHome.yaml';
+				const binpath = conf.get('AdGuardHome', 'AdGuardHome', 'binpath') ||
+					'/usr/bin/AdGuardHome/AdGuardHome';
+				conf.unload('AdGuardHome');
+
+				const temporaryConfig = '/tmp/AdGuardHometmpconfig.yaml';
+				const validationLog = '/tmp/AdGuardHometest.log';
+				if (writefile(temporaryConfig, replace(content, /\r\n/g, '\n')) == null)
+					return { saved: false, reason: 'write_failed' };
+
+				if (stat(binpath)?.type == 'file') {
+					const valid = system(['/bin/sh', '-c', '"$1" -c "$2" --check-config > "$3" 2>&1',
+						'sh', binpath, temporaryConfig, validationLog], 30000) == 0;
+					if (!valid)
+						return { saved: false, reason: 'validation_failed', log: readfile(validationLog) || '' };
+				}
+
+				if (writefile(configpath, readfile(temporaryConfig) || '') == null)
+					return { saved: false, reason: 'save_failed' };
+				unlink(temporaryConfig);
+				if (system(['/etc/init.d/AdGuardHome', 'reload'], 30000) != 0)
+					return { saved: false, reason: 'reload_failed' };
+				return { saved: true };
+			}
+		},
+		getInterfaces: {
+			call: function() {
+				return { interfaces: lsdir('/sys/class/net') || [] };
+			}
+		},
+		getCoreInfo: {
+			call: function() {
+				const conf = cursor();
+				const binpath = conf.get('AdGuardHome', 'AdGuardHome', 'binpath') ||
+					'/usr/bin/AdGuardHome/AdGuardHome';
+				const configpath = conf.get('AdGuardHome', 'AdGuardHome', 'configpath') ||
+					'/etc/AdGuardHome.yaml';
+				const result = {
+					core_exists: stat(binpath)?.type == 'file',
+					config_exists: stat(configpath)?.type == 'file',
+					version: null
+				};
+
+				if (result.core_exists) {
+					// Pass the configured path as a positional argument; capture both output streams.
+					const proc = popen('/bin/sh -c \'"$1" --version 2>&1\' sh ' + shellQuote(binpath), 'r');
+					if (proc) {
+						const output = proc.read('all') || '';
+						proc.close();
+						result.version = match(output, /version ([^, \t\r\n]+)/)?.[1] || null;
+					}
+				}
+
+				conf.unload('AdGuardHome');
+				return result;
+			}
+		},
+		getCoreUpdate: {
+			call: function() {
+				const running = stat('/var/run/update_core') != null;
+				const failed = stat('/var/run/update_core_error') != null;
+				const log = readfile('/tmp/AdGuardHome_update.log', 131072) || '';
+
+				return {
+					state: running ? 'running' : failed ? 'failure' : log ? 'finished' : 'idle',
+					log: log
+				};
+			}
+		},
+		startCoreUpdate: {
+			args: { force: false },
+			call: function(request) {
+				if (stat('/var/run/update_core') != null)
+					return { started: false, reason: 'busy' };
+
+				unlink('/var/run/update_core_error');
+				unlink('/tmp/AdGuardHome_update.log');
+
+				const command = request.args.force
+					? '/bin/sh /usr/share/AdGuardHome/update_core.sh force >/tmp/AdGuardHome_update.log 2>&1 </dev/null &'
+					: '/bin/sh /usr/share/AdGuardHome/update_core.sh >/tmp/AdGuardHome_update.log 2>&1 </dev/null &';
+
+				return { started: system(['/bin/sh', '-c', command], 3000) == 0 };
+			}
+		},
+		changeWebPassword: {
+			args: { hash: '' },
+			call: function(request) {
+				const hash = request.args.hash;
+				if (!match(hash, /^\$2[aby]\$(0[4-9]|[12][0-9]|3[01])\$[.\/A-Za-z0-9]{53}$/))
+					return { changed: false, reason: 'invalid_hash' };
+
+				const conf = cursor();
+				const configpath = conf.get('AdGuardHome', 'AdGuardHome', 'configpath') ||
+					'/etc/AdGuardHome.yaml';
+				if (stat(configpath)?.type != 'file')
+					return { changed: false, reason: 'no_config' };
+
+				if (!conf.set('AdGuardHome', 'AdGuardHome', 'hashpass', hash) ||
+					!conf.commit('AdGuardHome'))
+					return { changed: false, reason: 'save_failed' };
+				conf.unload('AdGuardHome');
+
+				if (system(['/etc/init.d/AdGuardHome', 'reload'], 30000) != 0)
+					return { changed: false, reason: 'reload_failed' };
+
+				if (index(readfile(configpath) || '', hash) < 0)
+					return { changed: false, reason: 'verify_failed' };
+				return { changed: true };
+			}
+		},
+		getRuntimeLog: {
+			args: { offset: 0 },
+			call: function(request) {
+				const conf = cursor();
+				const logfile = conf.get('AdGuardHome', 'AdGuardHome', 'logfile') || '';
+				conf.unload('AdGuardHome');
+				if (!logfile)
+					return { enabled: false, localtime: false, content: '', offset: 0 };
+
+				let source = logfile;
+				if (logfile == 'syslog') {
+					source = '/tmp/AdGuardHometmp.log';
+					writefile('/var/run/AdGuardHomesyslog', '1');
+					if (stat(source)?.type != 'file')
+						system(['/bin/sh', '-c', '/bin/sh /usr/share/AdGuardHome/getsyslog.sh >/dev/null 2>&1 &'], 3000);
+				}
+
+				const log = readfile(source) || '';
+				const size = length(log);
+				let offset = +request.args.offset || 0;
+				if (offset < 0 || offset > size)
+					offset = 0;
+				const content = substr(log, offset, 2097152);
+
+				return {
+					enabled: true,
+					localtime: logfile != 'syslog',
+					content: content,
+					offset: offset + length(content)
+				};
+			}
+		},
+		clearRuntimeLog: {
+			call: function() {
+				const conf = cursor();
+				const logfile = conf.get('AdGuardHome', 'AdGuardHome', 'logfile') || '';
+				conf.unload('AdGuardHome');
+				if (!logfile)
+					return { cleared: false, reason: 'no_logfile' };
+
+				const source = logfile == 'syslog' ? '/tmp/AdGuardHometmp.log' : logfile;
+				return { cleared: writefile(source, '') != null };
+			}
+		}
+	}
+};
