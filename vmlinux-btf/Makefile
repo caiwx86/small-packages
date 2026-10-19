@@ -35,14 +35,11 @@ define Package/vmlinux-btf/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || rm -f /usr/lib/debug/boot/vmlinux-$$(uname -r)
 endef
-
-# Toolchain and helpers
 BTF_CC ?= $(if $(TARGET_CC_NOCACHE),$(TARGET_CC_NOCACHE),$(TARGET_CROSS)gcc)
 BTF_PAHOLE ?= $(firstword \
 	$(wildcard $(STAGING_DIR_HOST)/bin/pahole /usr/bin/pahole /usr/local/bin/pahole) \
 	$(shell command -v pahole 2>/dev/null) \
 	pahole)
-PAHOLE_JOBS := $(if $(filter -j%,$(PKG_JOBS)),$(patsubst -j%,%,$(filter -j%,$(PKG_JOBS))),1)
 KERNEL_RELEASE := $(if $(wildcard $(LINUX_DIR)/include/config/kernel.release),$(shell cat $(LINUX_DIR)/include/config/kernel.release),$(LINUX_VERSION))
 
 BTF_CFLAGS := \
@@ -81,21 +78,16 @@ define Build/Compile
 		exit 1; \
 	fi
 
-	# Compile BTF stub sources
 	$(BTF_CC) $(BTF_CFLAGS) -c $(PKG_BUILD_DIR)/shadow_btf_core.c -o $(PKG_BUILD_DIR)/shadow_btf_core.o
 	-$(BTF_CC) $(BTF_CFLAGS) -c $(PKG_BUILD_DIR)/shadow_btf_modules.c -o $(PKG_BUILD_DIR)/shadow_btf_modules.o 2>/dev/null
 	-$(BTF_CC) $(BTF_CFLAGS) -c $(PKG_BUILD_DIR)/shadow_btf_private.c -o $(PKG_BUILD_DIR)/shadow_btf_private.o 2>/dev/null
-
-	# Link compiled objects into a single relocatable object
-	objs="$(PKG_BUILD_DIR)/shadow_btf_core.o"; \
-	[ ! -f "$(PKG_BUILD_DIR)/shadow_btf_modules.o" ] || objs="$$objs $(PKG_BUILD_DIR)/shadow_btf_modules.o"; \
-	[ ! -f "$(PKG_BUILD_DIR)/shadow_btf_private.o" ] || objs="$$objs $(PKG_BUILD_DIR)/shadow_btf_private.o"; \
-	$(TARGET_CROSS)ld -r -o $(PKG_BUILD_DIR)/shadow_btf.o $$objs
-
-	# Extract detached BTF
-	$(BTF_PAHOLE) --jobs=$(PAHOLE_JOBS) \
-		--btf_encode_detached=$(PKG_BUILD_DIR)/vmlinux-btf \
-		$(PKG_BUILD_DIR)/shadow_btf.o
+	$(TARGET_CROSS)ld -r -o $(PKG_BUILD_DIR)/shadow_btf.o $(PKG_BUILD_DIR)/shadow_btf_*.o
+	if $(BTF_PAHOLE) --help 2>&1 | grep -q -- '--btf_encode_detached'; then \
+		$(BTF_PAHOLE) --btf_encode_detached=$(PKG_BUILD_DIR)/vmlinux-btf $(PKG_BUILD_DIR)/shadow_btf.o; \
+	else \
+		$(BTF_PAHOLE) -J $(PKG_BUILD_DIR)/shadow_btf.o && \
+		$(TARGET_CROSS)objcopy --dump-section .BTF=$(PKG_BUILD_DIR)/vmlinux-btf $(PKG_BUILD_DIR)/shadow_btf.o; \
+	fi
 	test -s $(PKG_BUILD_DIR)/vmlinux-btf
 	$(BTF_PAHOLE) -C sk_buff $(PKG_BUILD_DIR)/shadow_btf.o >/dev/null
 endef
