@@ -5,14 +5,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-honk
-PKG_VERSION:=2026.10.18
+PKG_VERSION:=2026.10.20
 PKG_RELEASE:=1
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
-PKG_SOURCE:=doona-34657ab5-c73f88ec2d0e.tar.gz
+PKG_SOURCE:=doona-bc1cfbe5-be77900778e9.tar.gz
 PKG_SOURCE_URL:=https://github.com/kenzok8/openwrt-honk/releases/download/staging
 PKG_SOURCE_SUBDIR:=doona
-PKG_HASH:=c73f88ec2d0eefa3d2effed6260da8f1ce174f19fdfc286f4ec1f3fcb1205a1d
+PKG_HASH:=be77900778e980e3f396310631f20121140f6b54bd903345c515847fbed83081
 
 -include $(CURDIR)/generated-doona-stage.mk
 
