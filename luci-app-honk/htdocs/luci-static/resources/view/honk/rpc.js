@@ -30,7 +30,7 @@ const callRestart = rpc.declare({ object: 'honk', method: 'restart', expect: { '
 const callSettings = rpc.declare({
 	object: 'honk',
 	method: 'settings',
-	params: [ 'lan_network', 'listen_port', 'boot_enabled' ],
+	params: [ 'lan_network', 'listen_port', 'boot_enabled', 'clash_api_enabled', 'clash_api_port', 'clash_api_secret' ],
 	expect: { '': {} }
 });
 
@@ -122,6 +122,12 @@ function localWebUi(status) {
 	}
 }
 
+function localClashUi(status) {
+	if (!status || !status.clash_api_enabled || !status.clash_api_ready || !status.clash_ui_ready)
+		return null;
+	return localWebUi(Object.assign({}, status, { api_url: status.clash_api_url, api_ready: true }));
+}
+
 function tokenMessage(token) {
 	const messages = {
 		disabled: _('Honk is disabled.'),
@@ -198,6 +204,8 @@ function tokenMessage(token) {
 		invalid_lan_network: _('The selected LAN network is invalid or unavailable.'),
 		lan_network_unavailable: _('The selected LAN network is unavailable.'),
 		listen_port_occupied: _('The listen port is already in use.'),
+		clash_api_port_occupied: _('The Clash API port is already in use.'),
+		invalid_clash_api_settings: _('Enter a different Clash API port and a secret of 16–128 letters, numbers, underscores or hyphens.'),
 		invalid_listen_port: _('The listen port is invalid.'),
 		initialize_before_enabling_service: _('Complete initial setup before enabling Honk.'),
 		system_config_unavailable: _('Honk system configuration is unavailable.'),
@@ -304,6 +312,7 @@ return baseclass.extend({
 	waitJob: waitJob,
 	ensureOk: ensureOk,
 	localWebUi: localWebUi,
+	localClashUi: localClashUi,
 	statusIssue: statusIssue,
 	resultMessage: resultMessage,
 	errorMessage: errorMessage,
