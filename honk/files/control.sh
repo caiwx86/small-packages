@@ -35,8 +35,8 @@ valid_clash_api() {
 	case "$clash_api_port" in ''|*[!0-9]*) return 1 ;; esac
 	[ "$clash_api_port" -ge 1024 ] && [ "$clash_api_port" -le 65535 ] || return 1
 	[ "$clash_api_port" != "$listen_port" ] || return 1
-	case "$clash_api_secret" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
-	[ "${#clash_api_secret}" -ge 16 ] && [ "${#clash_api_secret}" -le 128 ]
+	case "$clash_api_secret" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+	[ "${#clash_api_secret}" -ge 6 ] && [ "${#clash_api_secret}" -le 128 ]
 }
 
 valid_network_name() {

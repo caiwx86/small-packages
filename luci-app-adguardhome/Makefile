@@ -7,8 +7,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-adguardhome
-PKG_VERSION:=2.4.1
-PKG_RELEASE:=1
+PKG_VERSION:=2.5.0
+PKG_RELEASE:=2
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
@@ -24,7 +24,7 @@ define Package/luci-app-adguardhome
 	TITLE:=LuCI app for AdGuardHome
 	PKG_MAINTAINER:=https://github.com/w9315273/luci-app-adguardhome
 	PKGARCH:=all
-	DEPENDS:=+luci-base +rpcd-mod-ucode +uclient-fetch +tar
+	DEPENDS:=+luci-base +rpcd-mod-ucode +uclient-fetch +jsonfilter +flock +ca-bundle +!(PACKAGE_libustream-openssl||PACKAGE_libustream-wolfssl):libustream-mbedtls +tar
 endef
 
 define Package/luci-app-adguardhome/description
@@ -61,7 +61,9 @@ if [ "$$enable" = "1" ]; then
 	/etc/init.d/AdGuardHome reload
 fi
 
-rm -f /tmp/luci-indexcache
+# Remove the former menu definition when upgrading.
+rm -f /usr/share/luci/menu.d/luci-app-adguardhome-js.json
+rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*
 rm -f /tmp/luci-modulecache/*
 /etc/init.d/rpcd reload
 

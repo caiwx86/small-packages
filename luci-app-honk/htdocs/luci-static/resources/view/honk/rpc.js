@@ -122,10 +122,27 @@ function localWebUi(status) {
 	}
 }
 
-function localClashUi(status) {
+function localClashUi(status, secret) {
 	if (!status || !status.clash_api_enabled || !status.clash_api_ready || !status.clash_ui_ready)
 		return null;
-	return localWebUi(Object.assign({}, status, { api_url: status.clash_api_url, api_ready: true }));
+	const base = localWebUi(Object.assign({}, status, { api_url: status.clash_api_url, api_ready: true }));
+	if (!base)
+		return null;
+	try {
+		const url = new URL(status.clash_api_url);
+		const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+		const port = status.clash_api_port || url.port;
+		const query = [
+			'host=' + encodeURIComponent(host),
+			'hostname=' + encodeURIComponent(host),
+			'port=' + encodeURIComponent(port),
+			'secret=' + encodeURIComponent(secret || '')
+		].join('&');
+		return base + '?' + query + '#/proxies';
+	}
+	catch (e) {
+		return null;
+	}
 }
 
 function tokenMessage(token) {
@@ -205,7 +222,7 @@ function tokenMessage(token) {
 		lan_network_unavailable: _('The selected LAN network is unavailable.'),
 		listen_port_occupied: _('The listen port is already in use.'),
 		clash_api_port_occupied: _('The Clash API port is already in use.'),
-		invalid_clash_api_settings: _('Enter a different Clash API port and a secret of 16–128 letters, numbers, underscores or hyphens.'),
+		invalid_clash_api_settings: _('Enter a different Clash API port and a secret of 6–128 letters, numbers, dots, underscores or hyphens.'),
 		invalid_listen_port: _('The listen port is invalid.'),
 		initialize_before_enabling_service: _('Complete initial setup before enabling Honk.'),
 		system_config_unavailable: _('Honk system configuration is unavailable.'),

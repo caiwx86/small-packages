@@ -452,8 +452,8 @@ load_uci_values() {
 	[ "$u_clash_port" -ge 1024 ] && [ "$u_clash_port" -le 65535 ] || return 1
 	if [ "$u_clash_enabled" = 1 ]; then
 		[ "$u_initialized" = 1 ] && [ "$u_clash_port" != "$u_port" ] || return 1
-		case "$u_clash_secret" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
-		[ "${#u_clash_secret}" -ge 16 ] && [ "${#u_clash_secret}" -le 128 ] || return 1
+		case "$u_clash_secret" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+		[ "${#u_clash_secret}" -ge 6 ] && [ "${#u_clash_secret}" -le 128 ] || return 1
 	fi
 }
 
