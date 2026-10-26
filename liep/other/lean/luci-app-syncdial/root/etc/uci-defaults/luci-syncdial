@@ -1,5 +1,0 @@
-#!/bin/sh
-touch /etc/config/syncdial
-
-rm -f /tmp/luci-indexcache
-exit 0
