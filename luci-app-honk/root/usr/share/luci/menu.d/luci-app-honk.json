@@ -1,58 +1,69 @@
 {
 	"admin/services/honk": {
-		"title": "Honk",
-		"order": 35,
+		"title": "HONK",
+		"order": -1,
 		"action": {
 			"type": "firstchild"
 		},
 		"depends": {
-			"acl": [ "luci-app-honk" ]
+			"acl": [ "luci-app-honk" ],
+			"uci": { "honk": true }
 		}
 	},
-	"admin/services/honk/overview": {
-		"title": "Overview",
-		"order": 10,
+	"admin/services/honk/global": {
+		"title": "Global Settings",
+		"order": 1,
 		"action": {
 			"type": "view",
-			"path": "honk/overview"
+			"path": "honk/global"
 		}
 	},
-	"admin/services/honk/configuration": {
-		"title": "Configuration",
-		"order": 20,
+	"admin/services/honk/dns": {
+		"title": "DNS Settings",
+		"order": 2,
 		"action": {
 			"type": "view",
-			"path": "honk/configuration"
+			"path": "honk/dns"
 		}
 	},
-	"admin/services/honk/logs": {
-		"title": "Logs",
-		"order": 30,
+	"admin/services/honk/node": {
+		"title": "Node Settings",
+		"order": 3,
 		"action": {
 			"type": "view",
-			"path": "honk/logs"
+			"path": "honk/node"
 		}
 	},
-	"admin/services/honk/maintenance": {
-		"title": "Maintenance",
-		"order": 40,
+	"admin/services/honk/route": {
+		"title": "Routing Settings",
+		"order": 4,
 		"action": {
 			"type": "view",
-			"path": "honk/maintenance"
+			"path": "honk/route"
+		}
+	},
+	"admin/services/honk/api": {
+		"title": "API Settings",
+		"order": 5,
+		"action": {
+			"type": "view",
+			"path": "honk/api"
 		}
 	},
 	"admin/services/honk/dashboard": {
-		"hidden": true,
+		"title": "Dashboard",
+		"order": 6,
 		"action": {
-			"type": "alias",
-			"path": "admin/services/honk/overview"
+			"type": "view",
+			"path": "honk/dashboard"
 		}
 	},
-	"admin/services/honk/settings": {
-		"hidden": true,
+	"admin/services/honk/log": {
+		"title": "Logs",
+		"order": 7,
 		"action": {
-			"type": "alias",
-			"path": "admin/services/honk/overview"
+			"type": "view",
+			"path": "honk/log"
 		}
 	}
 }
