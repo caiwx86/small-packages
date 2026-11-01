@@ -89,7 +89,7 @@ jobs:
         git_clone https://github.com/kiddin9/autoshare && mvdir autoshare
         git_clone https://github.com/kiddin9/luci-app-wizard
         git_clone https://github.com/kenzok78/luci-app-adguardhome
-        git_clone https://github.com/w9315273/luci-app-adguardhome luci-app-adguardhome-tk && mvdir luci-app-adguardhome-tk
+        git_clone https://github.com/w9315273/luci-app-adguardhome luci-app-adguardhome-tk
         git_clone https://github.com/kiddin9/openwrt-clouddrive2 && mvdir openwrt-clouddrive2
         git_clone https://github.com/kiddin9/openwrt-filebrowser && mvdir openwrt-filebrowser
         ) &
