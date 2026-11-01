@@ -1,79 +1,109 @@
-# Copyright (C) 2018-2024 OpenWrt luci-app-adguardhome contributors
 #
-# This is free software, licensed under the Apache License, Version 2.0 .
+# Copyright (C) 2025 w9315273
 #
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=luci-app-adguardhome
-PKG_MAINTAINER:=kenzok8
-PKG_VERSION:=1.0
-PKG_RELEASE:=9
+PKG_NAME:=luci-app-adguardhome-tk
+PKG_VERSION:=2.6.0
+PKG_RELEASE:=3
 
-LUCI_TITLE:=LuCI app for AdGuardHome
-LUCI_PKGARCH:=all
-LUCI_DEPENDS:=+ca-certs +curl +wget-ssl +PACKAGE_$(PKG_NAME)_INCLUDE_binary:adguardhome
-# luci-compat only exists in ucode-based LuCI (24.10+)
-ifneq ($(wildcard $(TOPDIR)/feeds/luci/luci-compat/Makefile),)
-  LUCI_DEPENDS+= +luci-compat
-endif
-LUCI_DESCRIPTION:=LuCI support for AdGuardHome
+PKG_MAINTAINER:=w9315273
+PKG_BUILD_DEPENDS:=luci-base/host
 
-define Package/$(PKG_NAME)/config
-config PACKAGE_$(PKG_NAME)_INCLUDE_binary
-	bool "Include Binary File"
-	default n
-	help
-	  When enabled, also pulls in the adguardhome binary package.
-	  Disabled by default to avoid init.d/config name conflict with
-	  the adguardhome package (uses lowercase init.d/adguardhome,
-	  while this LuCI app uses /etc/init.d/AdGuardHome). The LuCI
-	  app downloads the binary at runtime, so the package dependency
-	  is only needed for offline / sysupgrade scenarios.
+include $(INCLUDE_DIR)/package.mk
+
+define Package/luci-app-adguardhome-tk
+	SECTION:=luci
+	CATEGORY:=LuCI
+	SUBMENU:=3. Applications
+	TITLE:=LuCI app for AdGuardHome
+	PKG_MAINTAINER:=https://github.com/w9315273/luci-app-adguardhome
+	PKGARCH:=all
+	PROVIDES:=luci-app-adguardhome
+	CONFLICTS:=luci-app-adguardhome
+	DEPENDS:=+luci-base +rpcd-mod-ucode +uclient-fetch +jsonfilter +flock +ca-bundle +!(PACKAGE_libustream-openssl||PACKAGE_libustream-wolfssl):libustream-mbedtls +tar
 endef
 
-PKG_CONFIG_DEPENDS:= CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_binary
+define Package/luci-app-adguardhome-tk/description
+	LuCI support for AdGuardHome (nftables-based DNS redirect).
+	This package does NOT include the AdGuardHome core binary.
+endef
 
-define Package/luci-app-adguardhome/conffiles
-/usr/share/AdGuardHome/links.txt
+define Package/luci-i18n-adguardhome-tk-zh-cn
+	SECTION:=luci
+	CATEGORY:=LuCI
+	HIDDEN:=1
+	TITLE:=AdGuardHome - Simplified Chinese translation
+	PKGARCH:=all
+	PROVIDES:=luci-i18n-adguardhome-zh-cn
+	CONFLICTS:=luci-i18n-adguardhome-zh-cn
+	DEPENDS:=luci-app-adguardhome-tk
+	DEFAULT:=LUCI_LANG_zh_Hans
+endef
+
+define Package/luci-i18n-adguardhome-tk-zh-cn/description
+	Simplified Chinese translation for luci-app-adguardhome-tk.
+endef
+
+define Build/Prepare
+endef
+
+define Build/Compile
+endef
+
+define Package/luci-app-adguardhome-tk/conffiles
 /etc/config/AdGuardHome
 endef
 
-define Package/luci-app-adguardhome/postinst
+define Package/luci-app-adguardhome-tk/install
+	cp -pR ./root/* $(1)/
+endef
+
+define Package/luci-i18n-adguardhome-tk-zh-cn/install
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	echo "uci set luci.languages.zh_cn='简体中文 (Simplified Chinese)'; uci commit luci" \
+		> $(1)/etc/uci-defaults/luci-i18n-adguardhome-tk-zh-cn
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
+	po2lmo ./po/zh-cn/AdGuardHome.po \
+		$(1)/usr/lib/lua/luci/i18n/AdGuardHome.zh-cn.lmo
+endef
+
+define Package/luci-app-adguardhome-tk/postinst
 #!/bin/sh
-	# Stop and disable the lowercase /etc/init.d/adguardhome that ships
-	# with the adguardhome binary package, so it can not race the LuCI
-	# app's /etc/init.d/AdGuardHome (issue #254).
-	if [ -x /etc/init.d/adguardhome ] && [ -x /etc/init.d/AdGuardHome ]; then
-		/etc/init.d/adguardhome stop    >/dev/null 2>&1
-		/etc/init.d/adguardhome disable >/dev/null 2>&1
-	fi
-	/etc/init.d/AdGuardHome enable >/dev/null 2>&1
-	enable="$(uci get AdGuardHome.AdGuardHome.enabled 2>/dev/null)"
-	[ "$enable" = "1" ] && /etc/init.d/AdGuardHome reload >/dev/null 2>&1
-	rm -f /tmp/luci-indexcache
-	rm -f /tmp/luci-modulecache/* 2>/dev/null
+[ -n "$${IPKG_INSTROOT}" ] && exit 0
+
+/etc/init.d/AdGuardHome enable >/dev/null 2>&1
+
+enable=$$(uci get AdGuardHome.AdGuardHome.enabled 2>/dev/null)
+if [ "$$enable" = "1" ]; then
+	/etc/init.d/AdGuardHome reload
+fi
+
+# Remove the former menu definition when upgrading.
+rm -f /usr/share/luci/menu.d/luci-app-adguardhome-js.json
+rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*
+rm -f /tmp/luci-modulecache/*
+/etc/init.d/rpcd reload
+
 exit 0
 endef
 
-define Package/luci-app-adguardhome/prerm
+define Package/luci-app-adguardhome-tk/prerm
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
-	/etc/init.d/AdGuardHome disable >/dev/null 2>&1
-	/etc/init.d/AdGuardHome stop >/dev/null 2>&1
-	ucitrack_del() {
-		local name="$1"
-		local track="$(uci show ucitrack 2>/dev/null | grep -F "$name\." | head -1)"
-		[ -n "$track" ] && uci -q del "$track" 2>/dev/null
-	}
-	ucitrack_del "AdGuardHome"
-	[ -n "$(uci show ucitrack 2>/dev/null | grep -c 'AdGuardHome')" ] || true
-	uci commit ucitrack 2>/dev/null
+	/etc/init.d/AdGuardHome disable
+	/etc/init.d/AdGuardHome stop 2>/dev/null || true
+
+	uci -q batch <<-EOF >/dev/null 2>&1
+		delete ucitrack.@AdGuardHome[-1]
+		commit ucitrack
+EOF
 fi
+
 exit 0
 endef
 
-include $(TOPDIR)/feeds/luci/luci.mk
+$(eval $(call BuildPackage,luci-app-adguardhome-tk))
 
-# call BuildPackage - OpenWrt buildroot signature
-$(eval $(call BuildPackage,luci-app-adguardhome))
+$(eval $(call BuildPackage,luci-i18n-adguardhome-tk-zh-cn))
