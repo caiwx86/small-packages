@@ -1,2 +1,9 @@
 .DS_Store
-.local
+
+# Local debug artifacts from playwright-cli UI verification
+adg-*.png
+m-*.png
+bs-*.png
+*.png
+!screenshots/*.png
+.playwright-cli/
