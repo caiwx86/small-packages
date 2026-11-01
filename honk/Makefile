@@ -1,42 +1,56 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Copyright (C) 2026 kenzok8
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=honk
-PKG_VERSION:=0.1.0_beta4
+PKG_VERSION:=2026.11.01
 PKG_RELEASE:=1
 
-# Raw upstream release tag. It keeps the dots in qualifiers (e.g. v0.0.1.beta.49)
-# because that is what the GitHub release asset name uses.
-HONK_RELEASE_TAG:=v0.1.0-beta.4
-HONK_ASSET_TAG:=v0.1.0-beta.4
+# Pinned honk-core revision (upstream daeuniverse/honk main), cross-compiled by
+# ci/build-core.sh. Every release run publishes its core archives under an
+# immutable source-<run_id> tag; the tag and SHA-256 values below are the exact
+# assets behind CORE_COMMIT, so a plain feed build downloads and verifies them
+# without any generated file. A staged run may still override them through
+# honk/generated-stage.mk, which is generated and never committed.
+CORE_COMMIT:=54b2e1cfbe1e7f8a93dba3a0f64fabf2a9f88e38
 
-# SHA256 of each release tarball, kept in sync by scripts/update_honk_version.sh.
-HONK_HASH_X86_64:=48f694b13b9c5200e8e884ee19431035bd67b0ef01d04caef007047ad11ba02c
-HONK_HASH_AARCH64:=6cc92f862a1684ba9c49e9f9c08fb108f53444f338f1e9be84013e2f7fb7423d
+# Immutable source asset tag holding this pin's core archives.
+HONK_SOURCE_TAG?=source-41281523460
+HONK_SOURCE_URL?=https://github.com/kenzok8/openwrt-honk/releases/download/$(HONK_SOURCE_TAG)
 
-PKG_LICENSE:=AGPL-3.0-only
-PKG_LICENSE_FILE:=LICENSE
-PKG_MAINTAINER:=luci-app-honk maintainers
+-include $(CURDIR)/generated-stage.mk
 
-ifeq ($(ARCH),x86_64)
-  HONK_TARGET:=x86_64-unknown-linux-musl
+HONK_ASSET_X86_64?=honk-core-$(CORE_COMMIT)-x86_64.tar.gz
+HONK_ASSET_AARCH64?=honk-core-$(CORE_COMMIT)-aarch64.tar.gz
+HONK_ASSET_ARMV7?=honk-core-$(CORE_COMMIT)-armv7.tar.gz
+HONK_HASH_X86_64?=a5e46463505cc6ca15d704d77b57eba37b3ffe5d71498af928f052f612724deb
+HONK_HASH_AARCH64?=98084529a1186ecc60d0b4882a0d419cc127b7d7c86ad5952ae0eda236709274
+HONK_HASH_ARMV7?=e1f2a1dff427220301e4a343202e2c2c2b5efd8e996423ca981c6e0145540d60
+
+# ARCH_PACKAGES is the package arch (e.g. arm_cortex-a7_neon-vfpv4);
+# ARCH is the CPU arch (x86_64/aarch64/arm) and coincides for 64-bit.
+ifeq ($(ARCH_PACKAGES),x86_64)
+  HONK_ASSET:=$(HONK_ASSET_X86_64)
   HONK_HASH:=$(HONK_HASH_X86_64)
-else ifeq ($(ARCH),aarch64)
-  HONK_TARGET:=aarch64-unknown-linux-musl
+else ifeq ($(filter aarch64%,$(ARCH_PACKAGES)),$(ARCH_PACKAGES))
+  HONK_ASSET:=$(HONK_ASSET_AARCH64)
   HONK_HASH:=$(HONK_HASH_AARCH64)
+else ifeq ($(filter arm_%,$(ARCH_PACKAGES)),$(ARCH_PACKAGES))
+  HONK_ASSET:=$(HONK_ASSET_ARMV7)
+  HONK_HASH:=$(HONK_HASH_ARMV7)
 endif
 
-# mimalloc build: faster QUIC. honk.init sets MIMALLOC_ARENA_RESERVE=0 so the
-# 1 GiB arena reservation stays out of VmSize. Use "-stock" to go back.
-HONK_SUFFIX:=
-# Upstream feature variant: -native-api (recommended for OpenWrt gateway), -full, or empty for legacy releases.
-HONK_VARIANT:=-native-api
-HONK_ASSET:=honk-core-$(HONK_ASSET_TAG)-$(HONK_TARGET)$(HONK_SUFFIX)$(HONK_VARIANT).tar.gz
+PKG_LICENSE:=AGPL-3.0-only
+PKG_LICENSE_FILES:=LICENSE
+PKG_MAINTAINER:=kenzok8
 
 PKG_SOURCE:=$(HONK_ASSET)
-PKG_SOURCE_URL:=https://github.com/daeuniverse/honk/releases/download/$(HONK_RELEASE_TAG)/
+PKG_SOURCE_URL?=$(HONK_SOURCE_URL)/
 PKG_HASH:=$(HONK_HASH)
+
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -44,36 +58,22 @@ define Package/honk
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=Web Servers/Proxies
-  TITLE:=honk - eBPF transparent proxy engine (dae-compatible)
+  TITLE:=Honk transparent proxy core
   URL:=https://github.com/daeuniverse/honk
-  DEPENDS:=@(x86_64||aarch64) \
-    +ca-bundle +ip-full \
-    +kmod-sched-core +kmod-sched-bpf +kmod-veth +kmod-nft-queue \
-    +v2ray-geoip +v2ray-geosite \
-    +@KERNEL_XDP_SOCKETS \
-    +HONK_USE_VMLINUX_BTF:vmlinux-btf
+  # 不直接依赖 libubox：包名带 ABI 日期戳，会锁死固件；脚本只用 jshn 提供的 jshn.sh。
+  DEPENDS:=@(x86_64||aarch64||arm) +ca-bundle +ip-full +ubus +kmod-sched-core +kmod-sched-bpf +kmod-veth +kmod-nft-queue +jsonfilter +jshn +sqlite3-cli +usign +coreutils-stat +v2ray-geoip +v2ray-geosite +@KERNEL_DEBUG_INFO_BTF
 endef
 
-define Package/honk/config
-	choice
-		prompt "BTF source for CO-RE"
-		default HONK_USE_KERNEL_BTF
-		depends on PACKAGE_honk
-
-	config HONK_USE_KERNEL_BTF
-		bool "Use kernel BTF (integrated)"
-		depends on KERNEL_DEBUG_INFO_BTF
-
-	config HONK_USE_VMLINUX_BTF
-		bool "Use vmlinux-btf package"
-	endchoice
+define Package/honk/description
+  Honk is a transparent proxy core for OpenWrt (x86_64, aarch64, armv7).
 endef
 
 define Package/honk/conffiles
-/etc/honk/config.dae
-/etc/honk/config.d/
-/etc/honk/state/
 /etc/config/honk
+/etc/honk/config.dae
+/etc/honk/system.dae
+/etc/honk/manual-config.dae
+/etc/honk/managed-config.dae
 endef
 
 define Build/Prepare
@@ -82,25 +82,46 @@ define Build/Prepare
 endef
 
 define Build/Compile
-	true
 endef
 
 define Package/honk/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/honk-core $(1)/usr/bin/honk-core
 
-	$(INSTALL_DIR) $(1)/etc/honk/config.d
-	$(INSTALL_CONF) $(CURDIR)/files/config.dae $(1)/etc/honk/config.dae
-	$(INSTALL_CONF) $(CURDIR)/files/config.d/node.dae $(1)/etc/honk/config.d/node.dae
-	$(INSTALL_CONF) $(CURDIR)/files/config.d/route.dae $(1)/etc/honk/config.d/route.dae
-	$(INSTALL_CONF) $(CURDIR)/files/config.d/dns.dae $(1)/etc/honk/config.d/dns.dae
-	$(INSTALL_CONF) $(CURDIR)/files/config.d/api.dae $(1)/etc/honk/config.d/api.dae
+	$(INSTALL_DIR) $(1)/usr/share/licenses/honk
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/LICENSE $(1)/usr/share/licenses/honk/LICENSE
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) $(CURDIR)/files/honk.config $(1)/etc/config/honk
 
+	$(INSTALL_DIR) $(1)/etc/honk
+	$(INSTALL_CONF) $(CURDIR)/files/config.dae $(1)/etc/honk/config.dae
+	$(INSTALL_CONF) $(CURDIR)/files/system.dae $(1)/etc/honk/system.dae
+	chmod 0600 $(1)/etc/honk/system.dae
+	$(INSTALL_DIR) $(1)/etc/honk/state
+	chmod 0700 $(1)/etc/honk/state
+
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(CURDIR)/files/honk.init $(1)/etc/init.d/honk
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) $(CURDIR)/files/90-honk-boot $(1)/etc/uci-defaults/90-honk
+
+	$(INSTALL_DIR) $(1)/usr/share/honk
+	$(INSTALL_DATA) $(CURDIR)/files/config.dae $(1)/usr/share/honk/default-config.dae
+	# Provenance is only generated by a source build; a plain feed build has
+	# no such file and must still install cleanly.
+	if [ -f $(CURDIR)/generated-provenance.json ]; then \
+		$(INSTALL_DATA) $(CURDIR)/generated-provenance.json $(1)/usr/share/honk/provenance.json; \
+	fi
+	$(INSTALL_BIN) $(CURDIR)/files/control.sh $(1)/usr/share/honk/control.sh
+	$(INSTALL_BIN) $(CURDIR)/files/lock.sh $(1)/usr/share/honk/lock.sh
+	$(INSTALL_BIN) $(CURDIR)/files/lifecycle.sh $(1)/usr/share/honk/lifecycle.sh
+	$(INSTALL_BIN) $(CURDIR)/files/maintenance.sh $(1)/usr/share/honk/maintenance.sh
+	$(INSTALL_BIN) $(CURDIR)/files/job.sh $(1)/usr/share/honk/job.sh
+	$(INSTALL_BIN) $(CURDIR)/files/update.sh $(1)/usr/share/honk/update.sh
+	$(INSTALL_BIN) $(CURDIR)/files/redact-log.sh $(1)/usr/share/honk/redact-log.sh
+	$(INSTALL_BIN) $(CURDIR)/files/log-level-filter.sh $(1)/usr/share/honk/log-level-filter.sh
+	$(INSTALL_DATA) $(CURDIR)/files/log-lines.sh $(1)/usr/share/honk/log-lines.sh
 endef
 
 $(eval $(call BuildPackage,honk))
