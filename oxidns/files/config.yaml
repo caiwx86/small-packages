@@ -1,0 +1,378 @@
+# ==============================================================================
+# 部署位置：家庭网关/软路由（10.0.10.2），统一接管内网 DNS 请求
+# 核心职责：
+#   1) 国内域名 → 走 DoH/UDP 国内上游（腾讯/阿里/火山）
+#   2) 国外域名 → 转发给 OpenClash (:1053) 走代理出网
+#   3) 广告/恶意域名 → 直接黑洞 (NXDOMAIN)
+#   4) 微软 NCSI 等连通性检测域名 → 强制走国内序列，避免误判"断网"
+#   5) HTTPS RR (qtype=65) → 返回空应答，让浏览器回退 A/AAAA
+#   6) 未分类域名 → 先问国内上游，是 CN IP 就用，否则交给 OpenClash
+#
+# v3 相对 v2 的改动：
+#   - 不含 PT/BT 专用规则（已取消）
+#   - 新增 network.outbound：规则下载等出站请求用国内 DNS 自行解析，
+#     不再依赖 oxiDNS 自己（解决重启/首次启动时"自己等自己"的问题）
+#   - 日志改放 /tmp，避免相对路径落到不确定目录以及写闪存
+#   - 去掉 oisd_big（与 Hagezi 大量重叠，下载源也最不稳定，省内存和更新时间）
+#
+# v2 相对 v1 的改动（速度 / 稳定性）：
+#   - 查询记录 SQLite 与国内缓存 dump 移到 /tmp（RAM），减少闪存写入，
+#     避免路由器 flash 磨损和 IO 卡顿；查询记录只保留 3 天
+#   - 国内上游增加 UDP 223.5.5.5 / 119.29.29.29，并发数提到 4，取最快响应
+#   - 国内缓存容量 8192 → 16384，dump 周期 30 分钟 → 60 分钟
+#   - 预留可选的 AAAA 过滤（没有可用 IPv6 时开启，可明显减少"网页转圈"）
+# ==============================================================================
+
+log:
+  level: info
+  file: /tmp/oxidns.log
+  rotation:
+    type: daily
+    max_files: 3
+
+api:
+  http:
+    listen: 0.0.0.0:9199
+    auth:
+      type: basic
+      username: admin
+      # 建议改成强密码；默认口令暴露在局域网内不安全
+      password: oxidns
+    webui:
+      root: /usr/share/oxidns/webui
+      index: index.html
+
+# 出站请求（规则下载、升级检查等）使用的解析器与出口。
+# 这里直接指定国内 DNS，不经过本机 oxiDNS，避免启动/重启时下载失败。
+network:
+  outbound:
+    default: direct
+    profiles:
+      direct:
+        resolver:
+          nameservers:
+            - addr: "223.5.5.5:53"
+            - addr: "119.29.29.29:53"
+          ip_version: 4
+          timeout: 5s
+        proxy: none
+
+plugins:
+  # ---------------------------------------------------------------------------
+  # 定时任务：每天定时下载规则并热加载（无需重启进程）
+  # ---------------------------------------------------------------------------
+  - tag: cron_update
+    type: cron
+    args:
+      timezone: Asia/Shanghai
+      jobs:
+        - name: update_rules
+          interval: 1d
+          executors:
+            - $download_rules
+            - $reload_rules
+
+  # ---------------------------------------------------------------------------
+  # 规则下载：广告/安全列表 + GeoIP/GeoSite
+  # ---------------------------------------------------------------------------
+  - tag: download_rules
+    type: download
+    args:
+      timeout: 180s
+      startup_if_missing: true
+      downloads:
+        - url: https://anti-ad.net/adguard.txt
+          dir: /etc/oxidns/rules
+          filename: antiad.txt
+        - url: https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@main/adblock/ultimate.mini.txt
+          dir: /etc/oxidns/rules
+          filename: hagezi_ultimate_mini.txt
+        - url: https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@main/adblock/popupads.txt
+          dir: /etc/oxidns/rules
+          filename: hagezi_popupads.txt
+        - url: https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@main/adblock/doh.txt
+          dir: /etc/oxidns/rules
+          filename: hagezi_doh.txt
+        - url: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat
+          dir: /etc/oxidns/rules
+          filename: geosite.dat
+        - url: https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/geoip-only-cn-private.dat
+          dir: /etc/oxidns/rules
+          filename: geoip.dat
+
+  # ---------------------------------------------------------------------------
+  # 热加载：下载完成后重载以下 provider
+  # ---------------------------------------------------------------------------
+  - tag: reload_rules
+    type: reload_provider
+    args:
+      - $ad_rules
+      - $security_rules
+      - $geoip_cn
+      - $geosite_cn
+      - $geosite_no_cn
+      - $ms_ncsi_white
+
+  # ---------------------------------------------------------------------------
+  # Prometheus 指标
+  # ---------------------------------------------------------------------------
+  - tag: metrics_main
+    type: metrics_collector
+    args:
+      name: home
+
+  # ---------------------------------------------------------------------------
+  # 查询记录：放在 /tmp（内存盘），避免每次查询都写闪存；重启后清空
+  # ---------------------------------------------------------------------------
+  - tag: recorder_main
+    type: query_recorder
+    args:
+      path: /tmp/oxidns_query_history.sqlite
+      retention_days: 3
+
+  # ---------------------------------------------------------------------------
+  # 规则 Provider
+  # ---------------------------------------------------------------------------
+  - tag: ad_rules
+    type: adguard_rule
+    args:
+      files:
+        - /etc/oxidns/rules/antiad.txt
+        - /etc/oxidns/rules/hagezi_popupads.txt
+
+  - tag: security_rules
+    type: adguard_rule
+    args:
+      files:
+        - /etc/oxidns/rules/hagezi_ultimate_mini.txt
+        - /etc/oxidns/rules/hagezi_doh.txt
+
+  - tag: geoip_cn
+    type: geoip
+    args:
+      file: /etc/oxidns/rules/geoip.dat
+      selectors:
+        - cn
+      country: true
+
+  - tag: geosite_cn
+    type: geosite
+    args:
+      file: /etc/oxidns/rules/geosite.dat
+      selectors:
+        - cn
+
+  - tag: geosite_no_cn
+    type: geosite
+    args:
+      file: /etc/oxidns/rules/geosite.dat
+      selectors:
+        - geolocation-!cn
+
+  - tag: ms_ncsi_white
+    type: domain_set
+    args:
+      files: []
+      domains:
+        - msftconnecttest.com
+        - msftncsi.com
+        - ipv6.msftconnecttest.com
+        - www.msftconnecttest.com
+        - www.msftncsi.com
+
+  - tag: hosts
+    type: hosts
+    args:
+      files: []
+
+  # ---------------------------------------------------------------------------
+  # 缓存：国内 / 国外 / 未分类 三个实例，互不污染
+  # ---------------------------------------------------------------------------
+  # 国内缓存：容量加大，dump 放 /tmp（进程重启可热启动，整机重启则冷启动）
+  - tag: cache_direct
+    type: cache
+    args:
+      size: 16384
+      short_circuit: true
+      lazy_cache_ttl: 3600
+      cache_negative: true
+      max_negative_ttl: 60
+      negative_ttl_without_soa: 10
+      max_positive_ttl: 3600
+      min_positive_ttl: 5
+      ecs_in_key: false
+      dump_file: /tmp/oxidns_cache_direct.dump
+      dump_interval: 3600
+
+  # 国外缓存：不落盘、不做 lazy cache，避免 OpenClash 重启后 FakeIP 失效
+  - tag: cache_remote
+    type: cache
+    args:
+      size: 4096
+      short_circuit: true
+      cache_negative: true
+      max_negative_ttl: 30
+      negative_ttl_without_soa: 10
+      max_positive_ttl: 60
+      min_positive_ttl: 5
+      ecs_in_key: false
+
+  # 未分类域名缓存：不落盘
+  - tag: cache_unknown
+    type: cache
+    args:
+      size: 4096
+      short_circuit: true
+      cache_negative: true
+      max_negative_ttl: 30
+      negative_ttl_without_soa: 10
+      max_positive_ttl: 600
+      min_positive_ttl: 5
+      ecs_in_key: false
+
+  # ---------------------------------------------------------------------------
+  # 广告黑洞：NXDOMAIN
+  # ---------------------------------------------------------------------------
+  - tag: ad_blackhole
+    type: black_hole
+    args:
+      rcode: 3
+
+  # ---------------------------------------------------------------------------
+  # 上游转发
+  # ---------------------------------------------------------------------------
+  # 国内上游：DoH + UDP 混合并发，取最快的正响应
+  #   UDP 延迟最低，DoH 作为抗干扰/防篡改的补充
+  - tag: forward_cn
+    type: forward
+    args:
+      concurrent: 4
+      response_selection: prefer_positive
+      upstreams:
+        - tag: udp_alidns
+          addr: 223.5.5.5:53
+          idle_timeout: 30
+          timeout: 3s
+        - tag: udp_dnspod
+          addr: 119.29.29.29:53
+          idle_timeout: 30
+          timeout: 3s
+        - tag: doh_tencent
+          addr: https://doh.pub/dns-query
+          dial_addr: 1.12.12.12
+          idle_timeout: 30
+          insecure_skip_verify: false
+          timeout: 5s
+        - tag: doh_alibaba
+          addr: https://dns.alidns.com/dns-query
+          dial_addr: 223.5.5.5
+          idle_timeout: 30
+          insecure_skip_verify: false
+          timeout: 5s
+          enable_http3: true
+        - tag: udp_volcengine
+          addr: 180.184.1.1:53
+          idle_timeout: 30
+          timeout: 3s
+
+  # 国外上游：交给 OpenClash 的 DNS 端口
+  - tag: forward_openclash
+    type: forward
+    args:
+      upstreams:
+        - tag: openclash_dns
+          addr: 127.0.0.1:1053
+          timeout: 8s
+
+  # ---------------------------------------------------------------------------
+  # 子序列
+  # ---------------------------------------------------------------------------
+  - tag: ncsi_seq
+    type: sequence
+    args:
+      - exec: $cache_direct
+      - matches: has_resp
+        exec: accept
+      - exec: $forward_cn
+      - exec: accept
+
+  - tag: local_seq
+    type: sequence
+    args:
+      - exec: $cache_direct
+      - matches: has_resp
+        exec: accept
+      - exec: $forward_cn
+      - exec: accept
+
+  - tag: remote_seq
+    type: sequence
+    args:
+      - exec: $cache_remote
+      - matches: has_resp
+        exec: accept
+      - exec: $forward_openclash
+      - exec: accept
+
+  - tag: unknown_seq
+    type: sequence
+    args:
+      - exec: $cache_unknown
+      - matches: has_resp
+        exec: accept
+      - exec: $forward_cn
+      - matches: resp_ip $geoip_cn
+        exec: accept
+      - exec: drop_resp
+      - exec: $forward_openclash
+      - exec: accept
+
+  # ---------------------------------------------------------------------------
+  # 主序列：统一入口
+  # ---------------------------------------------------------------------------
+  - tag: main_sequence
+    type: sequence
+    args:
+      - exec: $recorder_main              # 1) 记录查询日志
+
+      - exec: $hosts                      # 2) hosts 优先
+      - matches: has_resp
+        exec: accept
+
+      - matches: qtype PTR                # 3) PTR 直接拒绝
+        exec: reject 3
+
+      - matches: qname $ms_ncsi_white     # 4) NCSI → 国内序列
+        exec: goto ncsi_seq
+
+      - matches: qname $ad_rules          # 5) 广告 → 黑洞
+        exec: $ad_blackhole
+      - matches: qname $security_rules    # 6) 安全 → 黑洞
+        exec: $ad_blackhole
+
+      - matches: qtype 65                 # 7) HTTPS RR → 空应答
+        exec: reject 0
+
+      # 8) 【可选】没有可用 IPv6 时取消下面两行注释，直接返回空 AAAA，
+      #    避免浏览器等待 IPv6 连接超时后才回退 IPv4
+      - matches: qtype 28
+        exec: reject 0
+
+      - matches: qname $geosite_cn        # 9) 国内站点
+        exec: goto local_seq
+
+      - matches: qname $geosite_no_cn     # 10) 非国内站点
+        exec: goto remote_seq
+
+      - exec: goto unknown_seq            # 11) 兜底：未分类域名
+
+  - tag: udp_server
+    type: udp_server
+    args:
+      entry: main_sequence
+      listen: 127.0.0.1:5353
+  - tag: tcp_server
+    type: tcp_server
+    args:
+      entry: main_sequence
+      listen: 127.0.0.1:5353
