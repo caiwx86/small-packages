@@ -157,9 +157,9 @@ jobs:
         git_sparse_clone master https://github.com/xiaoxiao29/luci-app-adguardhome \
               AdGuardHome
         git_sparse_clone master https://github.com/kenzok8/small \
-               dae daed luci-app-daede
-        git_sparse_clone main https://github.com/kenzok8/openwrt-honk \
-               honk luci-app-honk
+               dae daed luci-app-daede honk luci-app-honk
+        # git_sparse_clone main https://github.com/kenzok8/openwrt-honk \
+        #        honk luci-app-honk
         #git_sparse_clone master https://github.com/QiuSimons/luci-app-honk \
         #      honk luci-app-honk
         git_sparse_clone main https://github.com/djylb/nps-openwrt \
