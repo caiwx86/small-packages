@@ -252,11 +252,11 @@ plugins:
         - tag: udp_alidns
           addr: 223.5.5.5:53
           idle_timeout: 30
-          timeout: 3s
+          timeout: 8s
         - tag: udp_dnspod
           addr: 119.29.29.29:53
           idle_timeout: 30
-          timeout: 3s
+          timeout: 8s
         - tag: doh_tencent
           addr: https://doh.pub/dns-query
           dial_addr: 1.12.12.12
@@ -280,9 +280,9 @@ plugins:
     type: forward
     args:
       upstreams:
-        - tag: openclash_dns
-          addr: 127.0.0.1:1053
-          timeout: 8s
+        - tag: smart_dns_gfw
+          addr: 127.0.0.1:6953
+          timeout: 3s
 
   # ---------------------------------------------------------------------------
   # 子序列
