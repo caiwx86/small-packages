@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=AdGuardHome
-PKG_VERSION:=0.107.79
+PKG_VERSION:=0.107.80
 PKG_RELEASE:=1
 
 # 上游自 v0.107 起为“单二进制 + go:embed 前端”：前端由 client_v2 (npm/webpack)
@@ -16,7 +16,7 @@ PKG_RELEASE:=1
 # 这里使用官方 codeload 源码包（比 git clone 快，且可用 PKG_HASH 校验收包）。
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/AdguardTeam/AdGuardHome/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=5f4fa119f24ea741bb8cecfa74203165fe6b86b904cef05ff429fb227b07d425
+PKG_HASH:=c67cf289f1d4b05c78994f4d1d169962540814a212244eb191cd599795d90278
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
 PKG_LICENSE:=GPL-3.0-only
