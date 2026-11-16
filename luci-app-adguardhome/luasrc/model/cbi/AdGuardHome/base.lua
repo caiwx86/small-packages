@@ -10,6 +10,37 @@ local configpath = uci:get("AdGuardHome", "AdGuardHome", "configpath") or "/etc/
 local binpath = uci:get("AdGuardHome", "AdGuardHome", "binpath") or "/usr/bin/AdGuardHome"
 local httpport = uci:get("AdGuardHome", "AdGuardHome", "httpport") or "3000"
 
+local function read_dns_port(path)
+	local f = io.open(path, "r")
+	if not f then return nil end
+	local in_dns = false
+	local port
+	for line in f:lines() do
+		if line:match("^dns:%s*$") then
+			in_dns = true
+		elseif line:match("^%S") then
+			in_dns = false
+		elseif in_dns then
+			local p = line:match("^%s+port:%s*(%d+)")
+			if p then
+				port = p
+				break
+			end
+		end
+	end
+	f:close()
+	return port
+end
+
+local firewall_backend = "unknown"
+if fs.access("/sbin/fw4") or fs.access("/usr/sbin/fw4") then
+	firewall_backend = "nftables (fw4)"
+elseif fs.access("/sbin/iptables") or fs.access("/usr/sbin/iptables") then
+	firewall_backend = "iptables (fw3)"
+elseif fs.access("/sbin/nft") or fs.access("/usr/sbin/nft") then
+	firewall_backend = "nftables"
+end
+
 local function service_running()
 	if not fs.access(binpath) then
 		return false
@@ -54,12 +85,12 @@ o:value("beta", translate("预发布版 (beta)"))
 o.default = "stable"
 o.rmempty = false
 
-local port = luci.sys.exec("awk '/^  port:/{print $2;exit}' " .. configpath .. " 2>/dev/null")
-if not port or port == "" then
-	port = "?"
-end
+local port = read_dns_port(configpath) or "?"
 
-o = s:option(ListValue, "redirect", port .. translate("Redirect"), translate("AdGuardHome redirect mode"))
+o = s:option(ListValue, "redirect", "重定向模式")
+o.template = "AdGuardHome/redirect_mode"
+o.backend = firewall_backend
+o.agh_port = port
 o:value("none", translate("不启用"))
 o:value("dnsmasq-upstream", translate("作为 dnsmasq 上游服务器"))
 o:value("redirect", translate("将 53 端口劫持到 AdGuardHome"))
@@ -172,8 +203,8 @@ local function split_legacy_list(value)
 	if type(value) ~= "string" or value == "" then return value end
 	if not value:find("[\r\n]") then return value end
 	local t = {}
-	for line in value:gmatch("[^\r\n]+") do
-		line = line:match("^%s*(.-)%s*$")
+	for rawline in value:gmatch("[^\r\n]+") do
+		local line = rawline:match("^%s*(.-)%s*$")
 		if line ~= "" then t[#t+1] = line end
 	end
 	return t

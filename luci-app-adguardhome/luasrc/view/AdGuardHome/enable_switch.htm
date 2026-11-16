@@ -102,7 +102,7 @@
 			tb.innerHTML += '<em><b><font color=red><%:Not redirect%></font></b></em>';
 	}
 
-	function pollTarget(target, serial, left) {
+	function pollTarget(target, serial, left, repaired) {
 		XHR.get('<%=url([[admin]], [[services]], [[AdGuardHome]], [[status]])%>', null, function(_, statusData) {
 			if (serial !== pollSerial)
 				return;
@@ -115,15 +115,25 @@
 			}
 
 			if (left <= 0) {
+				if (!repaired) {
+					if (status)
+						status.innerHTML = '正在自动修复…';
+					XHR.get('<%=url([[admin]], [[services]], [[AdGuardHome]], [[repair]])%>', null, function() {
+						if (serial !== pollSerial)
+							return;
+						pollTarget(target, serial, 10, true);
+					});
+					return;
+				}
 				setState(!target);
 				if (status)
 					status.innerHTML = '';
-				notify(target ? '<%:AdGuardHome start failed%>' : '<%:AdGuardHome stop failed%>');
+				notify(target ? 'AdGuardHome 启动失败，已尝试自动修复，请检查日志' : 'AdGuardHome 停止失败，已尝试自动修复，请检查日志');
 				return;
 			}
 
 			window.setTimeout(function() {
-				pollTarget(target, serial, left - 1);
+				pollTarget(target, serial, left - 1, repaired);
 			}, 1000);
 		});
 	}

@@ -13,6 +13,10 @@ m = Map("AdGuardHome")
 local configpath = uci:get("AdGuardHome", "AdGuardHome", "configpath") or "/etc/AdGuardHome.yaml"
 local binpath = uci:get("AdGuardHome", "AdGuardHome", "binpath") or "/usr/bin/AdGuardHome"
 
+local function shell_quote(value)
+	return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
 s = m:section(TypedSection, "AdGuardHome")
 s.anonymous = true
 s.addremove = false
@@ -61,16 +65,20 @@ end
 o.validate = function(self, value)
 	if not value then return nil end
 	fs.writefile("/tmp/AdGuardHometmpconfig.yaml", value:gsub("\r\n", "\n"))
+	fs.remove("/tmp/AdGuardHometest.log")
 
-	if fs.access(binpath) then
-		local ret = sys.call(binpath .. " -c /tmp/AdGuardHometmpconfig.yaml --check-config 2>/tmp/AdGuardHometest.log")
-		if ret == 0 then
-			return value
-		end
-	else
+	if not fs.access(binpath) then
 		return value
 	end
 
+	local ret = sys.call(shell_quote(binpath) ..
+		" -c /tmp/AdGuardHometmpconfig.yaml --check-config 2>/tmp/AdGuardHometest.log")
+	if ret == 0 then
+		return value
+	end
+
+	-- Drop the rejected draft, otherwise it is shown again on the next visit.
+	fs.remove("/tmp/AdGuardHometmpconfig.yaml")
 	luci.http.redirect(luci.dispatcher.build_url("admin", "services", "AdGuardHome", "manual"))
 	return nil
 end

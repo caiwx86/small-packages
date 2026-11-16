@@ -52,6 +52,8 @@ function index()
 		call("reload_config"), nil)
 	entry({"admin", "services", "AdGuardHome", "gettemplateconfig"},
 		call("get_template_config"), nil)
+	entry({"admin", "services", "AdGuardHome", "repair"},
+		call("do_repair"), nil)
 end
 
 local function gen_template_config()
@@ -101,6 +103,34 @@ function act_status()
 
 	local redir = fs.readfile("/var/run/AdGredir")
 	result.redirect = (redir == "1")
+
+	http.prepare_content("application/json")
+	http.write_json(result)
+end
+
+function do_repair()
+	local output = luci.sys.exec("/etc/init.d/AdGuardHome repair 2>&1")
+	local enabled = uci:get("AdGuardHome", "AdGuardHome", "enabled") == "1"
+	local running = service_running()
+	-- Starting procd instances is asynchronous; give them a moment before
+	-- reporting the result to the page.
+	for _ = 1, 5 do
+		if running or not enabled then break end
+		luci.sys.call("sleep 1")
+		running = service_running()
+	end
+	local redir = fs.readfile("/var/run/AdGredir")
+	local result = {
+		success = (not enabled) or running,
+		enabled = enabled,
+		running = running,
+		redirect = (redir == "1"),
+		output = output
+	}
+
+	if not result.success then
+		result.message = "自动修复未完成，请检查系统日志或核心配置。"
+	end
 
 	http.prepare_content("application/json")
 	http.write_json(result)
@@ -269,6 +299,7 @@ function check_update()
 	if fs.access("/var/run/update_core") then
 		http.write(content)
 	else
-		http.write(content .. "\0")
+		-- Plain-text end marker: a NUL byte here made the template binary.
+		http.write(content .. "\n__AGH_UPDATE_FINISHED__\n")
 	end
 end

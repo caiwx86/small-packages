@@ -19,90 +19,107 @@ cleanup() {
 }
 
 check_already_running(){
-	# 先检查锁，再 touch（顺序关键：touch 在函数调用之后执行）
+	# The lock file holds the PID; a leftover file from a killed process must
+	# not block future updates forever.
 	if [ -f /var/run/update_core ]; then
-		echo "已有任务在运行，退出"
-		exit 2
+		local pid
+		pid="$(cat /var/run/update_core 2>/dev/null)"
+		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			echo "已有任务在运行，退出"
+			exit 2
+		fi
+		rm -f /var/run/update_core
 	fi
 }
 
 check_wgetcurl(){
-	if which curl >/dev/null 2>&1; then
+	if command -v curl >/dev/null 2>&1; then
 		downloader="curl -L -k --retry 2 --connect-timeout 20 -o"
 		return 0
 	fi
-	if which wget-ssl >/dev/null 2>&1; then
-		downloader="wget-ssl --no-check-certificate -t 2 -T 20 -O"
+	if command -v wget >/dev/null 2>&1; then
+		downloader="wget --no-check-certificate -t 2 -T 20 -O"
 		return 0
 	fi
 
-	if [ -z "$1" ]; then
-		opkg update >/dev/null 2>&1 || { echo "错误：opkg 更新失败"; cleanup 1; }
+	echo "缺少 curl/wget，正在尝试安装..."
+	if command -v apk >/dev/null 2>&1; then
+		apk update >/dev/null 2>&1
+		apk add curl >/dev/null 2>&1 || apk add wget >/dev/null 2>&1
+	elif command -v opkg >/dev/null 2>&1; then
+		opkg update >/dev/null 2>&1
+		opkg install curl >/dev/null 2>&1 || opkg install wget-ssl >/dev/null 2>&1
 	fi
 
-	if [ -z "$1" ]; then
-		opkg remove wget wget-nossl --force-depends >/dev/null 2>&1
-		opkg install wget >/dev/null 2>&1 && check_wgetcurl 1 && return 0
+	if command -v curl >/dev/null 2>&1; then
+		downloader="curl -L -k --retry 2 --connect-timeout 20 -o"
+		return 0
 	fi
-
-	if [ "$1" = "1" ]; then
-		opkg install curl >/dev/null 2>&1 && check_wgetcurl 2 && return 0
-	fi
-
-	if [ "$1" = "2" ]; then
-		check_wgetcurl && return 0
+	if command -v wget >/dev/null 2>&1; then
+		downloader="wget --no-check-certificate -t 2 -T 20 -O"
+		return 0
 	fi
 
 	echo "错误：缺少 curl 和 wget"
 	cleanup 1
 }
 
-get_arch(){
-	# 尝试多种方式获取架构：opkg → apk → uname -m
+get_owrt_arch(){
+	# Prefer the package manager architecture: it encodes endianness and CPU
+	# details that uname does not (for example mips64 vs. mips64el).
 	local a
-	a="$(opkg info kernel 2>/dev/null | grep Architecture | awk '{print $2}')"
-	[ -z "$a" ] && a="$(apk info --architecture 2>/dev/null)"
-	[ -z "$a" ] && a="$(uname -m)"
+	a="$(opkg info kernel 2>/dev/null | awk -F': *' '/^Architecture:/{print $2;exit}')"
+	[ -z "$a" ] && a="$(apk --print-arch 2>/dev/null)"
 	echo "$a"
 }
 
 detect_arch(){
-	local Archt
-	Archt="$(get_arch)"
+	local owrt machine
+	owrt="$(get_owrt_arch)"
+	machine="$(uname -m 2>/dev/null)"
 
-	case "$Archt" in
-	i386|i686|i386|x86)
-		Arch="386"
-		;;
-	x86_64|x86-64|amd64)
-		Arch="amd64"
-		;;
-	mipsel|mipsle)
-		Arch="mipsle"
-		;;
-	mips64el|mips64le)
-		Arch="mips64le"
-		;;
-	mips)
-		Arch="mips"
-		;;
-	mips64)
-		Arch="mips64"
-		;;
-	arm|armv7*|armv8*)
-		Arch="arm"
-		;;
-	armeb)
-		Arch="armeb"
-		;;
-	aarch64|arm64)
-		Arch="arm64"
-		;;
-	*)
-		echo "错误：不支持的架构：$Archt"
-		cleanup 1
-		;;
+	# AdGuard Home publishes separate armv5/armv6/armv7 and soft-float MIPS
+	# builds; map OpenWrt's architecture strings to the release asset names.
+	case "$owrt" in
+	x86_64) Arch="amd64" ;;
+	i386*|i486*|i586*|i686*) Arch="386" ;;
+	aarch64*) Arch="arm64" ;;
+	arm_cortex-a5*|arm_cortex-a7*|arm_cortex-a8*|arm_cortex-a9*|arm_cortex-a15*|arm_cortex-a17*) Arch="armv7" ;;
+	arm_arm1176*|arm_mpcore*|arm_arm11*) Arch="armv6" ;;
+	armeb*) Arch="" ;;
+	arm_*) Arch="armv5" ;;
+	mips64el*) Arch="mips64le_softfloat" ;;
+	mips64*) Arch="mips64_softfloat" ;;
+	mipsel*) Arch="mipsle_softfloat" ;;
+	mips*) Arch="mips_softfloat" ;;
+	powerpc64le*|ppc64le*) Arch="ppc64le" ;;
+	riscv64*) Arch="riscv64" ;;
+	*) Arch="" ;;
 	esac
+
+	if [ -z "$Arch" ]; then
+		case "$machine" in
+		x86_64|amd64) Arch="amd64" ;;
+		i[3-6]86) Arch="386" ;;
+		aarch64|arm64) Arch="arm64" ;;
+		armv8l|armv7*|armv8*) Arch="armv7" ;;
+		armv6*) Arch="armv6" ;;
+		armv5*|arm) Arch="armv5" ;;
+		mips64el*) Arch="mips64le_softfloat" ;;
+		mips64*) Arch="mips64_softfloat" ;;
+		mipsel*) Arch="mipsle_softfloat" ;;
+		mips*) Arch="mips_softfloat" ;;
+		ppc64le|powerpc64le) Arch="ppc64le" ;;
+		riscv64) Arch="riscv64" ;;
+		esac
+	fi
+
+	if [ -z "$Arch" ]; then
+		echo "错误：不支持的架构：${owrt:-$machine}"
+		cleanup 1
+	fi
+
+	echo "架构：${owrt:-$machine} -> $Arch"
 }
 
 check_latest_version(){
@@ -158,83 +175,88 @@ check_latest_version(){
 	fi
 }
 
+get_upx_arch(){
+	case "$Arch" in
+	amd64) echo "amd64" ;;
+	386) echo "i386" ;;
+	arm64) echo "arm64" ;;
+	armv5|armv6|armv7) echo "arm" ;;
+	mips_softfloat) echo "mips" ;;
+	mipsle_softfloat) echo "mipsel" ;;
+	ppc64le) echo "powerpc64le" ;;
+	riscv64) echo "riscv64" ;;
+	*) echo "" ;;
+	esac
+}
+
 apply_upx(){
-	[ -z "$upxflag" ] && return
+	[ -z "$upxflag" ] && return 0
 
 	local target="${1:-$binpath}"
-	[ ! -f "$target" ] && return
+	[ -f "$target" ] || return 0
 
 	local filesize
 	filesize="$(ls -l "$target" 2>/dev/null | awk '{print $5}')"
-	[ -z "$filesize" ] && return
-	[ "$filesize" -le 8000000 ] && return
+	[ -z "$filesize" ] && return 0
+	[ "$filesize" -le 8000000 ] && return 0
+
+	local upx_arch
+	upx_arch="$(get_upx_arch)"
+	if [ -z "$upx_arch" ]; then
+		echo "当前架构 $Arch 没有可用的 upx，跳过压缩"
+		return 0
+	fi
 
 	echo "二进制文件大于 8MB，正在使用 upx 压缩..."
-	fetch_upx
+	fetch_upx "$upx_arch" || return 0
 
-	local UPX_DIR="/tmp/upx-${upx_ver_nov}-${Arch}_linux"
+	local UPX_DIR="/tmp/upx-${upx_ver_nov}-${upx_arch}_linux"
 	local UPX_BIN="${UPX_DIR}/upx"
-	[ ! -x "$UPX_BIN" ] && { echo "upx 可执行文件未找到"; return; }
+	[ -x "$UPX_BIN" ] || { echo "upx 可执行文件未找到"; return 0; }
 
 	local upx_out="/tmp/AdGuardHomeupdate/upx-packed-$$"
-	$UPX_BIN $upxflag "$target" -o "$upx_out"
+	"$UPX_BIN" $upxflag -o "$upx_out" "$target"
 	local upxret=$?
 	rm -rf "$UPX_DIR"
 
-	if [ $upxret -eq 0 ]; then
+	if [ $upxret -eq 0 ] && [ -s "$upx_out" ]; then
 		rm -f "$target"
 		mv -f "$upx_out" "$target"
 		chmod 755 "$target"
 		echo "upx 压缩完成"
 	else
 		rm -f "$upx_out"
+		echo "upx 压缩失败，保留原文件"
 	fi
+	return 0
 }
 
 fetch_upx(){
-	local Archt_upx
-	Archt_upx="$(get_arch)"
-
-	case "$Archt_upx" in
-	i386|i686|x86|i386)  Arch="i386";;
-	x86_64|x86-64|amd64) Arch="amd64";;
-	mipsel|mipsle)       Arch="mipsel";;
-	mips64el|mips64le)   Arch="mipsel";;
-	mips)                 Arch="mips";;
-	mips64)               Arch="mips";;
-	arm|armv7*|armv8*)   Arch="arm";;
-	aarch64|arm64)        Arch="arm64";;
-	*)
-		echo "upx：不支持的架构 $Archt_upx"
-		return 1
-		;;
-	esac
+	local upx_arch="$1"
+	[ -n "$upx_arch" ] || return 1
 
 	upx_latest_ver="$($downloader - "https://api.github.com/repos/upx/upx/releases/latest" 2>/dev/null | grep -oE '"tag_name": *"[^"]+"' | head -1 | sed 's/.*"\(.*\)"/\1/')"
-
-	if [ -z "$upx_latest_ver" ]; then
-		echo "获取 upx 版本失败"
-		return 1
-	fi
+	[ -z "$upx_latest_ver" ] && { echo "获取 upx 版本失败"; return 1; }
 
 	upx_ver_nov="$(echo "$upx_latest_ver" | sed 's/^v//')"
-	local UPX_TGZ="/tmp/upx-${upx_ver_nov}-${Arch}_linux.tar.xz"
-	local UPX_URL="https://github.com/upx/upx/releases/download/${upx_latest_ver}/upx-${upx_ver_nov}-${Arch}_linux.tar.xz"
+	local UPX_TGZ="/tmp/upx-${upx_ver_nov}-${upx_arch}_linux.tar.xz"
+	local UPX_URL="https://github.com/upx/upx/releases/download/${upx_latest_ver}/upx-${upx_ver_nov}-${upx_arch}_linux.tar.xz"
 	$downloader "$UPX_TGZ" "$UPX_URL" 2>&1
 	[ $? -ne 0 ] && { echo "upx 下载失败"; return 1; }
 
-	which xz >/dev/null 2>&1 || { opkg install xz >/dev/null 2>&1 || apk add xz >/dev/null 2>&1; } || { echo "xz 不可用"; return 1; }
+	which xz >/dev/null 2>&1 || { opkg install xz >/dev/null 2>&1 || apk add xz >/dev/null 2>&1; }
+	which xz >/dev/null 2>&1 || { echo "xz 不可用"; rm -f "$UPX_TGZ"; return 1; }
 
 	xz -d -c "$UPX_TGZ" | tar -x -C "/tmp" >/dev/null 2>&1
-
-	[ ! -x "/tmp/upx-${upx_ver_nov}-${Arch}_linux/upx" ] && { echo "upx 解压失败"; return 1; }
 	rm -f "$UPX_TGZ"
+
+	[ -x "/tmp/upx-${upx_ver_nov}-${upx_arch}_linux/upx" ] || { echo "upx 解压失败"; return 1; }
 }
 
 update_core(){
 	echo "正在更新 AdGuardHome 核心..."
 	mkdir -p "/tmp/AdGuardHomeupdate"
-	rm -rf "/tmp/AdGuardHomeupdate/*" 2>/dev/null
+	rm -rf /tmp/AdGuardHomeupdate/* 2>/dev/null
 
 	detect_arch
 	echo "架构：$Arch"
@@ -303,6 +325,16 @@ update_core(){
 	[ $? -ne 0 ] && { echo "mv 失败 - 磁盘空间不足？"; cleanup 1; }
 	chmod 755 "$binpath"
 
+	# Refresh the version shown on the overview page without waiting for the
+	# next visit to the base settings.
+	local installed_ver
+	installed_ver="$("$binpath" --version 2>/dev/null | grep -oE 'v[0-9.]+(-[A-Za-z0-9.]+)?' | head -1)"
+	if [ -n "$installed_ver" ]; then
+		uci -q set AdGuardHome.AdGuardHome.version="$installed_ver"
+		uci -q set AdGuardHome.AdGuardHome.binmtime="$(stat -c %Y "$binpath" 2>/dev/null)"
+		uci -q commit AdGuardHome
+	fi
+
 	rm -rf "/tmp/AdGuardHomeupdate" 2>/dev/null
 
 	echo "正在启动服务..."
@@ -315,7 +347,7 @@ update_core(){
 trap "cleanup 1" SIGTERM SIGINT
 
 check_already_running
-touch /var/run/update_core
+echo $$ > /var/run/update_core
 rm -f /var/run/update_core_error 2>/dev/null
 
 check_latest_version "$1"

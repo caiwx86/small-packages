@@ -1,5 +1,9 @@
 <script>
 (function () {
+	// Several CBI option templates include this file on the same page.
+	if (window.__adgHeadLoaded) return;
+	window.__adgHeadLoaded = true;
+
 	// Load our CSS (CBI strips <link> tags; inject via JS)
 	var link = document.createElement('link');
 	link.rel = 'stylesheet';

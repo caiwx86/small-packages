@@ -14,6 +14,13 @@ local version    = uci:get("AdGuardHome", "AdGuardHome", "version")    or "-"
 local has_bin    = fs.access(binpath)
 local has_config = fs.access(configpath)
 
+local backend = "unknown"
+if fs.access("/sbin/fw4") or fs.access("/usr/sbin/fw4") then
+	backend = "nftables (fw4)"
+elseif fs.access("/sbin/iptables") or fs.access("/usr/sbin/iptables") then
+	backend = "iptables (fw3)"
+end
+
 local toggle_url = dsp.build_url("admin", "services", "AdGuardHome", "toggle")
 local base_url   = dsp.build_url("admin", "services", "AdGuardHome", "base")
 local tools_url  = dsp.build_url("admin", "services", "AdGuardHome", "tools")
@@ -176,7 +183,7 @@ body:has(.adg-ov-root) form .cbi-section + .cbi-page-actions { display: none !im
 				<%= redirect_text %>
 			</div>
 			<div class="sub" id="adg-ov-redir-sub">
-				<%:配置「基础设置 → 5553 重定向」%>
+				<%:配置「基础设置 → 重定向模式」%> · <%= backend %>
 			</div>
 		</div>
 
@@ -218,6 +225,8 @@ body:has(.adg-ov-root) form .cbi-section + .cbi-page-actions { display: none !im
 (function () {
 	var STATUS_URL = '<%=dsp.build_url("admin","services","AdGuardHome","status")%>';
 	var TOGGLE_URL = '<%=toggle_url%>';
+	var REPAIR_URL = '<%=dsp.build_url("admin","services","AdGuardHome","repair")%>';
+	var toggleSerial = 0;
 
 	var elStatus    = document.getElementById('adg-ov-status');
 	var elStatusSub = document.getElementById('adg-ov-status-sub');
@@ -259,6 +268,7 @@ body:has(.adg-ov-root) form .cbi-section + .cbi-page-actions { display: none !im
 
 	elToggle.addEventListener('change', function (ev) {
 		var want = elToggle.checked ? '1' : '0';
+		var serial = ++toggleSerial;
 		elSwitch.classList.add('busy');
 		elToggle.disabled = true;
 		XHR.post(TOGGLE_URL, { enabled: want, token: L && L.env ? L.env.token : '' }, function (x, data) {
@@ -267,6 +277,18 @@ body:has(.adg-ov-root) form .cbi-section + .cbi-page-actions { display: none !im
 			if (data) paint(data);
 			poll();
 		});
+		window.setTimeout(function () {
+			if (serial !== toggleSerial) return;
+			XHR.get(STATUS_URL, null, function (x2, statusData) {
+				if (!statusData || statusData.running === (want === '1')) return;
+				// The requested state was not reached; let the backend repair
+				// orphan processes, stale flags and a missing configuration.
+				XHR.get(REPAIR_URL, null, function (x3, repairData) {
+					if (repairData) paint(repairData);
+					poll();
+				});
+			});
+		}, 12000);
 	});
 
 	// hide bottom form action bar (Save/Apply/Reset) — fallback for browsers without :has
