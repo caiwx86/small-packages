@@ -49,5 +49,13 @@
 			"type": "cbi",
 			"path": "AdGuardHome/manual"
 		}
+	},
+	"admin/services/AdGuardHome/diag": {
+		"title": "诊断",
+		"order": 6,
+		"action": {
+			"type": "cbi",
+			"path": "AdGuardHome/diag"
+		}
 	}
 }

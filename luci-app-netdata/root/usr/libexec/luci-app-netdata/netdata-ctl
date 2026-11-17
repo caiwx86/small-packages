@@ -1,0 +1,559 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0
+#
+# LuCI Netdata helper. Executed by rpcd on behalf of an authenticated
+# LuCI session. Only the actions listed at the bottom are accepted.
+
+CONF=/etc/netdata/netdata.conf
+INIT=/etc/init.d/netdata
+CERT_DEFAULT=/etc/netdata/cert.crt
+KEY_DEFAULT=/etc/netdata/cert.key
+OPENSSL=/usr/bin/openssl
+NETDATA=/usr/sbin/netdata
+
+[ "$(id -u)" = "0" ] || { echo "ERROR must run as root"; exit 1; }
+
+log() {
+	logger -t luci-app-netdata "$*" 2>/dev/null
+}
+
+uci_get() {
+	local v
+	if uci -q get netdata.netdata >/dev/null 2>&1; then
+		v=$(uci -q get "netdata.netdata.$1" 2>/dev/null)
+	else
+		v=$(uci -q get "netdata.@netdata[0].$1" 2>/dev/null)
+	fi
+	printf '%s' "$v"
+}
+
+uci_set() {
+	if uci -q get netdata.netdata >/dev/null 2>&1; then
+		uci -q set "netdata.netdata.$1=$2"
+	else
+		uci -q set "netdata.@netdata[0].$1=$2"
+	fi
+}
+
+uci_commit() {
+	uci -q commit netdata 2>/dev/null
+}
+
+is_running() {
+	pidof netdata >/dev/null 2>&1
+}
+
+is_enabled() {
+	ls /etc/rc.d/S*netdata >/dev/null 2>&1
+}
+
+# netdata-ssl carries TLS support and its init script applies the UCI
+# enable_ssl / cert_file / key_file options to netdata.conf.
+netdata_ssl_supported() {
+	grep -q 'white_conf' "$INIT" 2>/dev/null
+}
+
+valid_port() {
+	case "$1" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	[ "$1" -ge 1 ] && [ "$1" -le 65535 ] || return 1
+	return 0
+}
+
+valid_bind() {
+	case "$1" in
+		''|*' '*|*';'*|*'/'*|*'$'*|*'|'*|*'&'*|*'"'*|*"'"*) return 1 ;;
+	esac
+	case "$1" in
+		*\\*|*'#'*) return 1 ;;
+	esac
+	return 0
+}
+
+conf_get() {
+	[ -f "$CONF" ] || return 0
+	awk -v key="$1" '
+		function trim(s) {
+			sub(/^[ \t]+/, "", s)
+			sub(/[ \t]+$/, "", s)
+			return s
+		}
+		/^[ \t]*\[/ {
+			s = tolower($0)
+			gsub(/^[ \t]*\[/, "", s)
+			gsub(/\][ \t]*$/, "", s)
+			next
+		}
+		s == "web" {
+			line = trim($0)
+			if (line ~ ("^" key "[ \t]*=")) {
+				sub("^[^=]*=[ \t]*", "", line)
+				print line
+				exit
+			}
+		}
+	' "$CONF"
+}
+
+update_conf() {
+	local port="$1" bind="$2" tmp confdir
+
+	confdir=$(dirname "$CONF")
+	[ -d "$confdir" ] || mkdir -p "$confdir"
+	if [ ! -f "$CONF" ]; then
+		printf '[global]\n\trun as user = root\n\n' > "$CONF"
+	fi
+
+	tmp="$CONF.luci.$$"
+	awk -v port="$port" -v bind="$bind" '
+		function flush_web() {
+			if (in_web && !done) {
+				if (!p)
+					print "\tdefault port = " port
+				if (!b)
+					print "\tbind to = " bind
+				done = 1
+			}
+		}
+		BEGIN { in_web = 0; done = 0; seen = 0; p = 0; b = 0 }
+		{ sub(/\r$/, "") }
+		/^[ \t]*\[[^]]*\][ \t]*$/ {
+			flush_web()
+			in_web = 0
+			head = $0
+			sub(/^[ \t]*\[[ \t]*/, "", head)
+			sub(/[ \t]*\][ \t]*$/, "", head)
+			if (tolower(head) == "web") {
+				print
+				in_web = 1
+				seen = 1
+				next
+			}
+			print
+			next
+		}
+		in_web && /^[ \t]*#[ \t]*default port[ \t]*=/ {
+			if (!p) { print "\tdefault port = " port; p = 1 }
+			next
+		}
+		in_web && /^[ \t]*default port[ \t]*=/ {
+			if (!p) { print "\tdefault port = " port; p = 1 }
+			next
+		}
+		in_web && /^[ \t]*#[ \t]*bind to[ \t]*=/ {
+			if (!b) { print "\tbind to = " bind; b = 1 }
+			next
+		}
+		in_web && /^[ \t]*bind to[ \t]*=/ {
+			if (!b) { print "\tbind to = " bind; b = 1 }
+			next
+		}
+		{ print }
+		END {
+			flush_web()
+			if (!seen) {
+				print ""
+				print "[web]"
+				print "\tdefault port = " port
+				print "\tbind to = " bind
+			}
+		}
+	' "$CONF" > "$tmp" || { rm -f "$tmp"; return 1; }
+
+	if cmp -s "$tmp" "$CONF"; then
+		rm -f "$tmp"
+		return 0
+	fi
+
+	mv -f "$tmp" "$CONF" || { rm -f "$tmp"; return 1; }
+	chmod 0644 "$CONF"
+	return 0
+}
+
+read_uci_config() {
+	PORT=$(uci_get port)
+	[ -n "$PORT" ] || PORT=19999
+	BIND=$(uci_get bind)
+	[ -n "$BIND" ] || BIND='*'
+	ENABLED=$(uci_get enabled)
+	case "$ENABLED" in
+		1|true|on|yes) ENABLED=1 ;;
+		*) ENABLED=0 ;;
+	esac
+}
+
+# Prints "cert key" for the first usable pair.
+find_cert() {
+	local c k
+
+	# A custom path explicitly configured by the user wins.
+	c=$(uci_get cert_file)
+	k=$(uci_get key_file)
+	if [ -n "$c" ] && [ "$c" != "$CERT_DEFAULT" ] && [ -n "$k" ] && [ -r "$c" ] && [ -r "$k" ]; then
+		echo "$c $k"
+		return 0
+	fi
+
+	# Prefer the certificate the browser already trusts for this LuCI host.
+	c=$(uci -q get uhttpd.@uhttpd[0].cert)
+	k=$(uci -q get uhttpd.@uhttpd[0].key)
+	if [ -n "$c" ] && [ -n "$k" ] && [ -r "$c" ] && [ -r "$k" ]; then
+		echo "$c $k"
+		return 0
+	fi
+
+	if [ -r /etc/uhttpd.crt ] && [ -r /etc/uhttpd.key ]; then
+		echo "/etc/uhttpd.crt /etc/uhttpd.key"
+		return 0
+	fi
+
+	c=$(uci -q get nginx.@server[0].ssl_certificate)
+	k=$(uci -q get nginx.@server[0].ssl_certificate_key)
+	if [ -n "$c" ] && [ -n "$k" ] && [ -r "$c" ] && [ -r "$k" ]; then
+		echo "$c $k"
+		return 0
+	fi
+
+	if [ -r /etc/nginx/conf.d/_lan.crt ] && [ -r /etc/nginx/conf.d/_lan.key ]; then
+		echo "/etc/nginx/conf.d/_lan.crt /etc/nginx/conf.d/_lan.key"
+		return 0
+	fi
+
+	# Finally reuse a certificate previously installed for netdata-ssl.
+	if [ -r "$CERT_DEFAULT" ] && [ -r "$KEY_DEFAULT" ]; then
+		echo "$CERT_DEFAULT $KEY_DEFAULT"
+		return 0
+	fi
+
+	return 1
+}
+
+# Generates a self-signed certificate as a last resort and prints "cert key".
+generate_cert() {
+	local host ip san
+
+	host=$(uci -q get system.@system[0].hostname)
+	[ -n "$host" ] || host=$(cat /proc/sys/kernel/hostname 2>/dev/null)
+	[ -n "$host" ] || host=OpenWrt
+
+	ip=$(uci -q get network.lan.ipaddr)
+	[ -n "$ip" ] && ip=$(echo "$ip" | sed 's#/.*##')
+
+	san="DNS:$host"
+	[ -n "$ip" ] && san="$san,IP:$ip"
+
+	mkdir -p /etc/netdata
+
+	if [ -x "$OPENSSL" ] && "$OPENSSL" req -x509 -newkey rsa:2048 -sha256 \
+		-days 3650 -nodes -keyout "$KEY_DEFAULT" -out "$CERT_DEFAULT" \
+		-subj "/CN=$host" -addext "subjectAltName=$san" >/dev/null 2>&1; then
+		chmod 0600 "$KEY_DEFAULT"
+		chmod 0644 "$CERT_DEFAULT"
+		echo "$CERT_DEFAULT $KEY_DEFAULT"
+		return 0
+	fi
+
+	if [ -x "$OPENSSL" ] && "$OPENSSL" req -x509 -newkey rsa:2048 -sha256 \
+		-days 3650 -nodes -keyout "$KEY_DEFAULT" -out "$CERT_DEFAULT" \
+		-subj "/CN=$host" >/dev/null 2>&1; then
+		chmod 0600 "$KEY_DEFAULT"
+		chmod 0644 "$CERT_DEFAULT"
+		echo "$CERT_DEFAULT $KEY_DEFAULT"
+		return 0
+	fi
+
+	return 1
+}
+
+# Reuses the LuCI/nginx certificate when possible, otherwise generates one.
+# Sets CERT and KEY.
+setup_tls() {
+	local pair cert key changed=0
+
+	CERT=""
+	KEY=""
+
+	netdata_ssl_supported || return 1
+
+	pair=$(find_cert) || pair=$(generate_cert)
+	[ -n "$pair" ] || return 1
+	cert=$(echo "$pair" | awk '{print $1}')
+	key=$(echo "$pair" | awk '{print $2}')
+	[ -n "$cert" ] && [ -n "$key" ] && [ -r "$cert" ] && [ -r "$key" ] || return 1
+
+	[ "$(uci_get enable_ssl)" = "1" ] || { uci_set enable_ssl 1; changed=1; }
+	[ "$(uci_get cert_file)" = "$cert" ] || { uci_set cert_file "$cert"; changed=1; }
+	[ "$(uci_get key_file)" = "$key" ] || { uci_set key_file "$key"; changed=1; }
+	if [ "$(uci_get nginx_support)" = "1" ]; then
+		uci_set nginx_support 0
+		changed=1
+	fi
+	[ "$changed" = "1" ] && uci_commit
+
+	CERT="$cert"
+	KEY="$key"
+	return 0
+}
+
+is_ssl_enabled() {
+	local c k
+	[ "$(uci_get enable_ssl)" = "1" ] || return 1
+	c=$(conf_get 'ssl certificate')
+	k=$(conf_get 'ssl key')
+	[ -n "$c" ] && [ -n "$k" ] && [ -r "$c" ] && [ -r "$k" ]
+}
+
+print_status() {
+	local port bind pid ver ssl tls sslconf cert
+
+	port=$(conf_get 'default port')
+	[ -n "$port" ] || port=$(uci_get port)
+	bind=$(conf_get 'bind to')
+
+	pid=$(pidof netdata 2>/dev/null | awk '{print $1}')
+	ver=$("$NETDATA" -v 2>/dev/null | awk '{print $2}' | sed 's/^v//')
+
+	tls=0
+	netdata_ssl_supported && tls=1
+
+	ssl=0
+	[ "$tls" = "1" ] && is_ssl_enabled && ssl=1
+
+	sslconf=0
+	if [ "$(uci_get enable_ssl)" = "1" ]; then
+		cert=$(uci_get cert_file)
+		[ -n "$cert" ] && [ -r "$cert" ] && [ -r "$(uci_get key_file)" ] && sslconf=1
+	fi
+
+	cert=$(conf_get 'ssl certificate')
+	[ -n "$cert" ] || cert=$(uci_get cert_file)
+
+	echo "running=$(is_running && echo 1 || echo 0)"
+	echo "pid=$pid"
+	echo "enabled=$(is_enabled && echo 1 || echo 0)"
+	echo "uci_enabled=$(uci_get enabled)"
+	echo "port=$port"
+	echo "bind=$bind"
+	echo "uci_port=$(uci_get port)"
+	echo "ssl=$ssl"
+	echo "ssl_configured=$sslconf"
+	echo "tls=$tls"
+	echo "cert=$cert"
+	echo "version=$ver"
+}
+
+start_service() {
+	local quiet="$1" i
+
+	if is_running; then
+		[ -n "$quiet" ] || echo "OK already running"
+		return 0
+	fi
+	[ -x "$INIT" ] || { echo "ERROR $INIT not found"; return 1; }
+
+	# netdata-ssl refuses to start unless UCI enabled is set.
+	[ "$(uci_get enabled)" = "1" ] || { uci_set enabled 1; uci_commit; }
+	[ "$(uci_get enable_ssl)" = "1" ] && setup_tls >/dev/null 2>&1
+
+	"$INIT" enable >/dev/null 2>&1
+	"$INIT" start >/dev/null 2>&1
+
+	i=0
+	while [ $i -lt 10 ]; do
+		is_running && break
+		sleep 1
+		i=$((i + 1))
+	done
+
+	if is_running; then
+		log "netdata started"
+		[ -n "$quiet" ] || echo "OK started"
+		return 0
+	fi
+	log "netdata failed to start"
+	echo "ERROR netdata failed to start (see logread for details)"
+	return 1
+}
+
+stop_service() {
+	local quiet="$1" i
+
+	if ! is_running; then
+		[ -n "$quiet" ] || echo "OK already stopped"
+		return 0
+	fi
+
+	"$INIT" stop >/dev/null 2>&1
+
+	i=0
+	while [ $i -lt 10 ]; do
+		is_running || break
+		sleep 1
+		i=$((i + 1))
+	done
+
+	if is_running; then
+		echo "ERROR netdata is still running"
+		return 1
+	fi
+	log "netdata stopped"
+	[ -n "$quiet" ] || echo "OK stopped"
+	return 0
+}
+
+apply_all() {
+	local scheme="$1" rc=0 oldport oldbind oldcert oldkey oldssl=0 was_running ssl_changed=0
+
+	read_uci_config
+	valid_port "$PORT" || { echo "ERROR invalid port: $PORT"; exit 1; }
+	valid_bind "$BIND" || { echo "ERROR invalid listen address: $BIND"; exit 1; }
+
+	oldport=$(conf_get 'default port')
+	oldbind=$(conf_get 'bind to')
+	oldcert=$(conf_get 'ssl certificate')
+	oldkey=$(conf_get 'ssl key')
+	is_ssl_enabled && oldssl=1
+
+	was_running=0
+	is_running && was_running=1
+
+	# HTTPS pages use natively encrypted Netdata when the build supports it.
+	if [ "$scheme" = "https" ] || [ "$(uci_get enable_ssl)" = "1" ]; then
+		if setup_tls; then
+			if [ "$oldcert" != "$CERT" ] || [ "$oldkey" != "$KEY" ]; then
+				ssl_changed=1
+			fi
+		elif [ "$scheme" = "https" ]; then
+			uci_set enable_ssl 0
+			uci_commit
+			rc=1
+		fi
+	fi
+
+	if [ "$oldssl" = "1" ] && [ "$(uci_get enable_ssl)" != "1" ]; then
+		ssl_changed=1
+	fi
+
+	update_conf "$PORT" "$BIND" || { echo "ERROR cannot write $CONF"; exit 1; }
+
+	[ -x "$INIT" ] || { echo "ERROR $INIT not found"; exit 1; }
+	if [ "$ENABLED" = "1" ]; then
+		"$INIT" enable >/dev/null 2>&1
+	else
+		"$INIT" disable >/dev/null 2>&1
+	fi
+
+	if [ "$ENABLED" = "1" ]; then
+		if [ "$was_running" = "1" ]; then
+			if [ "$PORT" != "$oldport" ] || [ "$BIND" != "$oldbind" ] || [ "$ssl_changed" = "1" ]; then
+				restart_service quiet || rc=1
+			fi
+		else
+			start_service quiet || rc=1
+		fi
+	else
+		if [ "$was_running" = "1" ]; then
+			stop_service quiet || rc=1
+		fi
+	fi
+
+	[ "$rc" = "0" ] && echo "OK settings applied" || echo "WARN settings applied with warnings"
+	print_status
+	return $rc
+}
+
+restart_service() {
+	local quiet="$1" i
+
+	if ! is_running; then
+		start_service "$quiet"
+		return $?
+	fi
+
+	[ "$(uci_get enabled)" = "1" ] || { uci_set enabled 1; uci_commit; }
+	"$INIT" enable >/dev/null 2>&1
+	"$INIT" restart >/dev/null 2>&1
+
+	i=0
+	while [ $i -lt 12 ]; do
+		is_running && break
+		sleep 1
+		i=$((i + 1))
+	done
+
+	if is_running; then
+		log "netdata restarted"
+		[ -n "$quiet" ] || echo "OK restarted"
+		return 0
+	fi
+	echo "ERROR netdata did not restart"
+	return 1
+}
+
+ensure_setup() {
+	local scheme="$1"
+
+	if [ "$scheme" = "https" ] && setup_tls; then
+		if is_running; then
+			if [ "$(conf_get 'ssl certificate')" != "$CERT" ] || [ "$(conf_get 'ssl key')" != "$KEY" ]; then
+				restart_service quiet >/dev/null 2>&1
+			fi
+		fi
+	fi
+
+	print_status
+	return 0
+}
+
+sync_conf() {
+	read_uci_config
+	valid_port "$PORT" || { echo "ERROR invalid port: $PORT"; return 1; }
+	valid_bind "$BIND" || { echo "ERROR invalid listen address: $BIND"; return 1; }
+	update_conf "$PORT" "$BIND" || { echo "ERROR cannot write $CONF"; return 1; }
+
+	if [ "$(uci_get enable_ssl)" = "1" ]; then
+		setup_tls >/dev/null 2>&1 || { uci_set enable_ssl 0; uci_commit; }
+	fi
+	return 0
+}
+
+case "$1" in
+	status)
+		print_status
+		;;
+	tls)
+		if setup_tls; then
+			echo "OK tls configured"
+		else
+			echo "ERROR tls is not supported or no certificate is available"
+			exit 1
+		fi
+		print_status
+		;;
+	sync)
+		sync_conf || exit 1
+		;;
+	apply)
+		apply_all "$2" || exit 1
+		;;
+	ensure)
+		ensure_setup "$2"
+		;;
+	start)
+		start_service || exit 1
+		print_status
+		;;
+	stop)
+		stop_service || exit 1
+		print_status
+		;;
+	restart)
+		restart_service || exit 1
+		print_status
+		;;
+	*)
+		echo "ERROR unknown action: $1"
+		exit 1
+		;;
+esac

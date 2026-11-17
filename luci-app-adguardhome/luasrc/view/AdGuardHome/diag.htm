@@ -1,0 +1,299 @@
+<%+AdGuardHome/head%>
+<%
+local fs = require "nixio.fs"
+local uci = require "luci.model.uci".cursor()
+local sys = require "luci.sys"
+local dsp = require "luci.dispatcher"
+
+local configpath = uci:get("AdGuardHome", "AdGuardHome", "configpath") or "/etc/AdGuardHome.yaml"
+local binpath = uci:get("AdGuardHome", "AdGuardHome", "binpath") or "/usr/bin/AdGuardHome"
+local workdir = uci:get("AdGuardHome", "AdGuardHome", "workdir") or "/etc/AdGuardHome"
+local logfile = uci:get("AdGuardHome", "AdGuardHome", "logfile") or ""
+local enabled = uci:get("AdGuardHome", "AdGuardHome", "enabled") == "1"
+local mode = uci:get("AdGuardHome", "AdGuardHome", "redirect") or "none"
+local http_port = uci:get("AdGuardHome", "AdGuardHome", "httpport") or "3000"
+
+local function shq(value)
+	return "'" .. tostring(value or ""):gsub("'", "'\\''") .. "'"
+end
+
+local function run(cmd)
+	return sys.exec(cmd .. " 2>&1") or ""
+end
+
+local function h(text)
+	return (tostring(text or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+
+local function firstline(text)
+	return (text or ""):match("^[^\r\n]*") or ""
+end
+
+local function read_dns_port(path)
+	local f = io.open(path, "r")
+	if not f then return nil end
+	local in_dns = false
+	local port
+	for line in f:lines() do
+		if line:match("^dns:%s*$") then
+			in_dns = true
+		elseif line:match("^%S") then
+			in_dns = false
+		elseif in_dns then
+			local p = line:match("^%s+port:%s*(%d+)")
+			if p then port = p break end
+		end
+	end
+	f:close()
+	return port
+end
+
+local function service_pids()
+	local name = binpath:match("([^/]+)$")
+	local list = {}
+	if not name then return list end
+	for path in fs.glob("/proc/*/comm") do
+		local comm = fs.readfile(path)
+		if comm then
+			comm = comm:gsub("%s+$", "")
+			if comm == name then
+				local pid = path:match("/proc/(%d+)/comm")
+				if pid then list[#list + 1] = pid end
+			end
+		end
+	end
+	table.sort(list, function(a, b) return tonumber(a) < tonumber(b) end)
+	return list
+end
+
+local dns_port = read_dns_port(configpath) or "?"
+local pids = service_pids()
+local running = #pids > 0
+local pid_text = #pids > 0 and table.concat(pids, " ") or "-"
+
+local version = "-"
+if fs.access(binpath) then
+	local v = firstline(run(shq(binpath) .. " --version"))
+	version = v ~= "" and v or "无法执行"
+end
+
+local config_ok, config_check = nil, "跳过（缺少核心或配置）"
+if fs.access(binpath) and fs.access(configpath) then
+	local rc = sys.call(shq(binpath) .. " -c " .. shq(configpath) .. " --check-config >/tmp/adg_diag_check.log 2>&1")
+	config_ok = (rc == 0)
+	config_check = fs.readfile("/tmp/adg_diag_check.log") or (config_ok and "通过" or "失败")
+	config_check = firstline(config_check)
+end
+
+local backend = "unknown"
+if fs.access("/sbin/fw4") or fs.access("/usr/sbin/fw4") then
+	backend = "nftables (fw4)"
+elseif fs.access("/sbin/iptables") or fs.access("/usr/sbin/iptables") then
+	backend = "iptables (fw3)"
+elseif fs.access("/sbin/nft") or fs.access("/usr/sbin/nft") then
+	backend = "nftables"
+end
+
+local applied = (fs.readfile("/var/run/AdGredir") or "") == "1"
+local netstat = run("netstat -lnp")
+if netstat == "" or not netstat:find(":") then netstat = run("netstat -ln") end
+if netstat == "" or not netstat:find(":") then netstat = run("ss -lnp") end
+
+local port_lines = {}
+for line in netstat:gmatch("[^\r\n]+") do
+	local port = line:match(":(%d+)%s")
+	if port == dns_port or port == http_port then
+		port_lines[#port_lines + 1] = line
+	end
+end
+local port_text = #port_lines > 0 and table.concat(port_lines, "\n") or "（未发现监听记录）"
+
+local dns_listen, web_listen = false, false
+local dns_seen, web_seen = false, false
+for _, line in ipairs(port_lines) do
+	local port = line:match(":(%d+)%s")
+	if port == dns_port then
+		dns_seen = true
+		if line:find("AdGuardHome", 1, true) then dns_listen = true end
+	end
+	if port == http_port then
+		web_seen = true
+		if line:find("AdGuardHome", 1, true) then web_listen = true end
+	end
+end
+
+local nft_rules = run("nft list table inet adguardhome")
+local ipt_rules = run("iptables -t nat -S PREROUTING | grep -- '--dport 53'")
+local rule_text = nft_rules ~= "" and nft_rules or ipt_rules
+if rule_text == "" then rule_text = "（未发现重定向规则）" end
+
+local disk = run("df -k " .. shq(workdir) .. " | tail -n 1")
+local disk_pct = tonumber(disk:match("(%d+)%%"))
+local mem = run("free -m | head -n 2")
+if mem == "" then
+	local total = tonumber(run("awk '/MemTotal/{print $2}' /proc/meminfo"))
+	local avail = tonumber(run("awk '/MemAvailable/{print $2}' /proc/meminfo"))
+	if total and avail then
+		mem = string.format("MemTotal: %d MB\nMemAvailable: %d MB", math.floor(total / 1024), math.floor(avail / 1024))
+	end
+end
+
+local logs = run("logread -e AdGuardHome | tail -n 40")
+local filelog = ""
+if logfile ~= "" and logfile ~= "syslog" and fs.access(logfile) then
+	filelog = run("tail -n 40 " .. shq(logfile))
+end
+
+local backups = {}
+for path in fs.glob(configpath .. ".bak*") do
+	if path ~= configpath .. ".before-restore" then backups[#backups + 1] = path end
+end
+table.sort(backups)
+local backup_text = #backups > 0 and table.concat(backups, "\n") or "（无）"
+local old_core = fs.access(binpath .. ".old")
+local update_lock = fs.access("/var/run/update_core")
+local procd_pids = run([[ubus call service list '{"name":"AdGuardHome"}' | jsonfilter -e '@.AdGuardHome.instances.*.pid']])
+
+local checks = {}
+local function check(name, state, detail)
+	checks[#checks + 1] = { name = name, state = state, detail = detail }
+end
+
+check("服务进程", running and "ok" or (enabled and "bad" or "warn"),
+	running and ("PID " .. pid_text) or (enabled and "已启用但未运行" or "服务未启用"))
+check("核心文件", fs.access(binpath) and "ok" or "bad", binpath .. " · " .. version)
+check("配置文件", fs.access(configpath) and "ok" or "bad", configpath)
+check("配置校验", config_ok == nil and "warn" or (config_ok and "ok" or "bad"), config_check)
+check("防火墙后端", backend ~= "unknown" and "ok" or "bad", backend)
+check("重定向模式", mode == "none" and "warn" or (applied and "ok" or "bad"),
+	(mode == "none" and "未接管 DNS" or (applied and "已生效" or "未生效")))
+check("DNS 端口监听", (not running) and "warn" or (dns_listen and "ok" or (dns_seen and "warn" or "bad")),
+	"端口 " .. dns_port .. (dns_listen and "（AdGuardHome）" or (dns_seen and "（监听中，进程未知）" or "（未监听）")))
+check("Web 端口监听", (not running) and "warn" or (web_listen and "ok" or (web_seen and "warn" or "warn")),
+	"端口 " .. http_port .. (web_listen and "（AdGuardHome）" or (web_seen and "（监听中，进程未知）" or "（未监听）")))
+check("工作目录磁盘", (disk_pct and disk_pct >= 95) and "bad" or (disk_pct and disk_pct >= 85) and "warn" or "ok",
+	disk ~= "" and disk or "无法读取")
+check("核心更新锁", update_lock and "warn" or "ok", update_lock and "更新进行中" or "空闲")
+
+local report = table.concat({
+	"=== AdGuardHome 诊断 ===",
+	"时间: " .. os.date("%Y-%m-%d %H:%M:%S"),
+	"启用: " .. tostring(enabled) .. " / 运行: " .. tostring(running) .. " / PID: " .. pid_text,
+	"procd PID: " .. (procd_pids:gsub("\n", " ") ~= "" and procd_pids:gsub("\n", " ") or "-"),
+	"核心: " .. binpath .. " (" .. version .. ")",
+	"配置: " .. configpath,
+	"配置校验: " .. tostring(config_ok) .. " " .. config_check,
+	"模式: " .. mode .. " / 生效: " .. tostring(applied) .. " / 后端: " .. backend,
+	"DNS 端口: " .. dns_port .. " / Web 端口: " .. http_port,
+	"磁盘: " .. disk,
+	"内存: " .. mem:gsub("\n", " | "),
+	"备份: " .. backup_text:gsub("\n", " "),
+	"旧核心: " .. tostring(old_core),
+	"",
+	"--- 端口 ---", port_text,
+	"--- 规则 ---", rule_text,
+	"--- 系统日志 ---", logs,
+	"--- 运行日志 ---", filelog
+}, "\n")
+%>
+<style>
+.adg-diag-toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px; }
+.adg-diag-toolbar .adg-actmsg { font-size:12px; color:var(--adg-label-muted,#666); }
+.adg-diag-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:8px; margin-bottom:14px; }
+.adg-check { display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border:1px solid var(--adg-card-border,rgba(128,128,128,.18)); border-radius:8px; background:var(--adg-card-bg,rgba(128,128,128,.04)); }
+.adg-badge { flex:0 0 auto; padding:1px 7px; border-radius:999px; font-size:11px; font-weight:600; }
+.adg-badge.ok { color:#2d7d46; background:rgba(45,125,70,.12); }
+.adg-badge.warn { color:#a06a12; background:rgba(224,160,47,.14); }
+.adg-badge.bad { color:#b03030; background:rgba(176,48,48,.12); }
+.adg-check-body { min-width:0; }
+.adg-check-name { font-weight:600; font-size:13px; }
+.adg-check-detail { font-size:12px; color:var(--adg-label-muted,#666); word-break:break-all; }
+.adg-diag-pre { max-height:16rem; overflow:auto; padding:8px 10px; border-radius:8px; background:#1a1d21; color:#cfd6df; font-size:11.5px; line-height:1.4; white-space:pre-wrap; word-break:break-all; }
+.adg-diag-section { margin:14px 0 6px; font-weight:600; font-size:13px; }
+.adg-diag-note { font-size:12px; color:var(--adg-label-muted,#666); margin-top:4px; }
+</style>
+
+<div class="adg-diag-toolbar">
+	<a class="btn cbi-button" href="?"><%:Refresh%></a>
+	<button type="button" class="btn cbi-button" onclick="adgCopy()"><%:Copy diagnostics%></button>
+	<button type="button" class="btn cbi-button cbi-button-apply" onclick="adgPost('backup')"><%:Backup config%></button>
+	<button type="button" class="btn cbi-button" onclick="adgPost('restore', '恢复最近的配置备份？当前配置会保存为 .before-restore')"><%:Restore config%></button>
+	<button type="button" class="btn cbi-button" onclick="adgPost('rollback', '回滚到上一版核心？')" <%= old_core and "" or "disabled" %>><%:Rollback core%></button>
+	<span class="adg-actmsg" id="adg-actmsg"></span>
+</div>
+
+<div class="adg-diag-grid">
+<% for _, c in ipairs(checks) do %>
+	<div class="adg-check">
+		<span class="adg-badge <%=c.state%>"><%= c.state == "ok" and "正常" or (c.state == "warn" and "注意" or "异常") %></span>
+		<span class="adg-check-body">
+			<span class="adg-check-name"><%=h(c.name)%></span><br />
+			<span class="adg-check-detail"><%=h(c.detail)%></span>
+		</span>
+	</div>
+<% end %>
+</div>
+
+<div class="adg-diag-section">端口监听</div>
+<pre class="adg-diag-pre"><%=h(port_text)%></pre>
+
+<div class="adg-diag-section">重定向规则</div>
+<pre class="adg-diag-pre"><%=h(rule_text)%></pre>
+
+<div class="adg-diag-section">磁盘 / 内存</div>
+<pre class="adg-diag-pre"><%=h(disk .. "\n" .. mem)%></pre>
+
+<div class="adg-diag-section">配置备份</div>
+<pre class="adg-diag-pre"><%=h(backup_text)%></pre>
+
+<div class="adg-diag-section">系统日志（logread -e AdGuardHome）</div>
+<pre class="adg-diag-pre"><%=h(logs ~= "" and logs or "（无）")%></pre>
+
+<div class="adg-diag-section">运行日志</div>
+<pre class="adg-diag-pre"><%=h(filelog ~= "" and filelog or "（未配置或为空）")%></pre>
+
+<div class="adg-diag-section">完整诊断报告</div>
+<pre class="adg-diag-pre" id="adg-report"><%=h(report)%></pre>
+
+<script type="text/javascript">//<![CDATA[
+var ADG_ACTIONS = {
+	backup: '<%=dsp.build_url("admin", "services", "AdGuardHome", "backupconfig")%>',
+	restore: '<%=dsp.build_url("admin", "services", "AdGuardHome", "restoreconfig")%>',
+	rollback: '<%=dsp.build_url("admin", "services", "AdGuardHome", "rollbackcore")%>'
+};
+
+function adgPost(name, question) {
+	if (question && !confirm(question)) return;
+	var msg = document.getElementById('adg-actmsg');
+	if (msg) msg.textContent = '处理中…';
+	XHR.post(ADG_ACTIONS[name], { token: L.env.token }, function(x, data) {
+		if (data && data.success) {
+			if (msg) msg.textContent = '完成，正在刷新…';
+			window.setTimeout(function() { location.reload(); }, 700);
+		} else if (msg) {
+			msg.textContent = (data && data.message) || '操作失败';
+		}
+	});
+}
+
+function adgCopy() {
+	var node = document.getElementById('adg-report');
+	if (!node) return;
+	var text = node.textContent;
+	function done() {
+		var msg = document.getElementById('adg-actmsg');
+		if (msg) { msg.textContent = '已复制'; window.setTimeout(function() { msg.textContent = ''; }, 1500); }
+	}
+	if (navigator.clipboard && window.isSecureContext) {
+		navigator.clipboard.writeText(text).then(done).catch(function() {});
+		return;
+	}
+	var ta = document.createElement('textarea');
+	ta.value = text;
+	document.body.appendChild(ta);
+	ta.select();
+	try { document.execCommand('copy'); done(); } catch (e) {}
+	ta.parentNode.removeChild(ta);
+}
+//]]>
+</script>

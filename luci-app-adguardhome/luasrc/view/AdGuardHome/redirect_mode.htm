@@ -213,7 +213,7 @@
 	btn.addEventListener('click', function() {
 		btn.disabled = true;
 		if (msg) msg.textContent = '正在检测并修复…';
-		XHR.get('<%=url([[admin]], [[services]], [[AdGuardHome]], [[repair]])%>', null, function(x, data) {
+		XHR.post('<%=url([[admin]], [[services]], [[AdGuardHome]], [[repair]])%>', { token: L.env.token }, function(x, data) {
 			btn.disabled = false;
 			if (!data) {
 				if (msg) msg.textContent = '检测失败，请查看系统日志';

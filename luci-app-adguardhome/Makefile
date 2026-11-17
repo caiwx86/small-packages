@@ -8,11 +8,11 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=luci-app-adguardhome
 PKG_MAINTAINER:=kenzok8
 PKG_VERSION:=1.0
-PKG_RELEASE:=11
+PKG_RELEASE:=14
 
 LUCI_TITLE:=LuCI app for AdGuardHome
 LUCI_PKGARCH:=all
-LUCI_DEPENDS:=+ca-certs +curl +wget-ssl +PACKAGE_$(PKG_NAME)_INCLUDE_binary:adguardhome
+LUCI_DEPENDS:=+ca-certs +curl +wget-ssl +jsonfilter +PACKAGE_$(PKG_NAME)_INCLUDE_binary:adguardhome
 # luci-compat only exists in ucode-based LuCI (24.10+)
 ifneq ($(wildcard $(TOPDIR)/feeds/luci/luci-compat/Makefile),)
   LUCI_DEPENDS+= +luci-compat
@@ -37,6 +37,7 @@ PKG_CONFIG_DEPENDS:= CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_binary
 define Package/luci-app-adguardhome/conffiles
 /usr/share/AdGuardHome/links.txt
 /etc/config/AdGuardHome
+/etc/AdGuardHome.yaml
 endef
 
 define Package/luci-app-adguardhome/postinst

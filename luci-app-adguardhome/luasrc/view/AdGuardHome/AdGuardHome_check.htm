@@ -74,7 +74,7 @@ var updatebtn = document.getElementById('apply_update_button');
 var forceupdatebtn = document.getElementById('apply_forceupdate_button');
 var islogreverse = false;
 function apply_forceupdate(){
-	XHR.get('<%=url([[admin]], [[services]], [[AdGuardHome]], [[doupdate]])%>',{ force: 1 },function(x, data){}
+	XHR.post('<%=url([[admin]], [[services]], [[AdGuardHome]], [[doupdate]])%>',{ force: 1, token: L.env.token },function(x, data){}
 		);
 	updatebtn.disabled = true;
 	poll_check();
@@ -91,7 +91,7 @@ function reverselog(){
 	return
 }
 function apply_update(){
-	XHR.get('<%=url([[admin]], [[services]], [[AdGuardHome]], [[doupdate]])%>',null,function(x, data){}
+	XHR.post('<%=url([[admin]], [[services]], [[AdGuardHome]], [[doupdate]])%>',{ token: L.env.token },function(x, data){}
 		);
 	updatebtn.disabled = true;
 	updatebtn.value    = '<%:Check...%>';
@@ -107,8 +107,9 @@ XHR.poll(3, '<%=url([[admin]], [[services]], [[AdGuardHome]], [[check]])%>', nul
 		var lv = document.getElementById('cbid.logview.1.conf');
 		if (!x.responseText || !lv) return;
 		var text = x.responseText;
-		var done = text.indexOf('__AGH_UPDATE_FINISHED__') >= 0;
-		if (done) text = text.replace(/__AGH_UPDATE_FINISHED__\n?/g, '');
+		var done = text.indexOf('__AGH_UPDATE_FINISHED') >= 0;
+		var failed = text.indexOf('__AGH_UPDATE_FINISHED_ERROR__') >= 0;
+		if (done) text = text.replace(/__AGH_UPDATE_FINISHED(_ERROR)?__\n?/g, '');
 		if (text) {
 			if (islogreverse) lv.innerHTML = text.split('\n').reverse().join('\n') + lv.innerHTML;
 			else lv.innerHTML += text;
@@ -118,7 +119,7 @@ XHR.poll(3, '<%=url([[admin]], [[services]], [[AdGuardHome]], [[check]])%>', nul
 			if (this.XHR._q[j].url == '<%=url([[admin]], [[services]], [[AdGuardHome]], [[check]])%>') {
 				this.XHR._q.splice(j, 1);
 				updatebtn.disabled = false;
-				updatebtn.value = '<%:Updated%>';
+				updatebtn.value = failed ? '<%:Update failed%>' : '<%:Updated%>';
 				break;
 			}
 		}

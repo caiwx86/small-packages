@@ -57,7 +57,7 @@ m.description = translate("Free and open source, powerful network-wide ads & tra
 -- ============================================================
 -- Section 1: Basic Settings
 -- ============================================================
-s = m:section(NamedSection, "AdGuardHome", "AdGuardHome", "基本设置")
+s = m:section(NamedSection, "AdGuardHome", "AdGuardHome", translate("基本设置"))
 
 o = s:option(Flag, "enabled", translate("Enable"))
 o.default = "0"
@@ -87,7 +87,7 @@ o.rmempty = false
 
 local port = read_dns_port(configpath) or "?"
 
-o = s:option(ListValue, "redirect", "重定向模式")
+o = s:option(ListValue, "redirect", translate("重定向模式"))
 o.template = "AdGuardHome/redirect_mode"
 o.backend = firewall_backend
 o.agh_port = port
@@ -98,10 +98,21 @@ o:value("exchange", translate("使用 53 端口替代 dnsmasq"))
 o.default = "none"
 o.optional = true
 
+o = s:option(DynamicList, "wan_ifname", translate("WAN 侧排除接口"),
+	translate("从这些接口进入的 53 端口 DNS 请求不会重定向到 AdGuard Home，避免在 WAN 侧形成开放解析器。"))
+o.rmempty = true
+o.datatype = "string"
+local netmod_ok, netmod = pcall(require, "luci.sys.net")
+if netmod_ok and netmod and netmod.devices then
+	for _, dev in ipairs(netmod.devices()) do
+		o:value(dev, dev)
+	end
+end
+
 -- ============================================================
 -- Section 2: Paths & Logs
 -- ============================================================
-s = m:section(NamedSection, "AdGuardHome", "AdGuardHome", "路径与日志")
+s = m:section(NamedSection, "AdGuardHome", "AdGuardHome", translate("路径与日志"))
 
 o = s:option(Value, "binpath", translate("Bin Path"), translate("AdGuardHome Bin path if no bin will auto download"))
 o.default = "/usr/bin/AdGuardHome"
@@ -175,7 +186,7 @@ o.optional = true
 -- ============================================================
 -- Section 3: Advanced Settings
 -- ============================================================
-s = m:section(NamedSection, "AdGuardHome", "AdGuardHome", "高级设置")
+s = m:section(NamedSection, "AdGuardHome", "AdGuardHome", translate("高级设置"))
 
 o = s:option(ListValue, "upxflag", translate("use upx to compress bin after download"))
 o:value("", translate("none"))
@@ -236,6 +247,11 @@ o.datatype = "uinteger"
 o.placeholder = translate("推荐 ") .. tostring(mem_suggest_mib)
 o.rmempty = true
 
+o = s:option(Flag, "jail", translate("启用 procd 文件隔离（实验性）"))
+o.default = "0"
+o.rmempty = true
+o.description = translate("开启后，上面的“只读/读写文件访问”列表才会生效。需要内核支持 namespaces，可能影响证书或数据目录读取，默认关闭。")
+
 o = s:option(Flag, "waitonboot", translate("On boot when network ok restart"))
 o.default = "1"
 o.rmempty = true
@@ -245,31 +261,7 @@ o.rmempty = true
 -- ============================================================
 fs.writefile("/var/run/lucilogpos", "0")
 
-function m.on_commit(map)
-	if fs.access("/var/run/AdGserverdis") then
-		io.popen("/etc/init.d/AdGuardHome reload &")
-		return
-	end
-
-	local ucitracktest = uci:get("AdGuardHome", "AdGuardHome", "ucitracktest")
-	if ucitracktest == "1" then
-		return
-	elseif ucitracktest == "0" then
-		io.popen("/etc/init.d/AdGuardHome reload &")
-	else
-		if fs.access("/var/run/AdGlucitest") then
-			uci:set("AdGuardHome", "AdGuardHome", "ucitracktest", "0")
-			io.popen("/etc/init.d/AdGuardHome reload &")
-		else
-			fs.writefile("/var/run/AdGlucitest", "")
-			if ucitracktest == "2" then
-				uci:set("AdGuardHome", "AdGuardHome", "ucitracktest", "1")
-			else
-				uci:set("AdGuardHome", "AdGuardHome", "ucitracktest", "2")
-			end
-		end
-		uci:save("AdGuardHome")
-	end
-end
+-- Reloads are handled by procd (ucitrack + service_triggers); the old
+-- ucitracktest state machine skipped the first save and is gone.
 
 return m

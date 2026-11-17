@@ -283,7 +283,7 @@ body:has(.adg-ov-root) form .cbi-section + .cbi-page-actions { display: none !im
 				if (!statusData || statusData.running === (want === '1')) return;
 				// The requested state was not reached; let the backend repair
 				// orphan processes, stale flags and a missing configuration.
-				XHR.get(REPAIR_URL, null, function (x3, repairData) {
+				XHR.post(REPAIR_URL, { token: L.env.token, auto: 1 }, function (x3, repairData) {
 					if (repairData) paint(repairData);
 					poll();
 				});

@@ -5,6 +5,7 @@ USE_PROCD=1
 
 APPBINARY=/usr/sbin/netdata
 CONFIGFILE=/etc/netdata/netdata.conf
+OPENSSL=/usr/bin/openssl
 
 config_load 'netdata'
 
@@ -16,24 +17,95 @@ get_config() {
 	config_get key_file $1 key_file '/etc/netdata/cert.key'
 	config_get_bool ennginx $1 nginx_support 0
 	config_get_bool auth $1 auth 0
-	config_get userpw $1 user_passwd 'admin:$apr1$t7qQjoqb$YBHtAb7VGSkjIdObMG.Oy0'
+	config_get userpw $1 user_passwd ''
+
+	[ -n "$cert_file" ] || cert_file='/etc/netdata/cert.crt'
+	[ -n "$key_file" ] || key_file='/etc/netdata/cert.key'
 	[ "$ennginx" == "1" ] && ssl=0
 }
 
 #read_option <option>
 read_option() {
 	[ -n "$1" ] || return 1
-	sed -En "/^\[web\]/,/^(\[|$)/{s|^\s*$1 = *(.*)$|\1|p}" "$CONFIGFILE"
+	awk -v key="$1" '
+		/^[[:space:]]*\[/ {
+			s = tolower($0)
+			gsub(/^[[:space:]]*\[/, "", s)
+			gsub(/\][[:space:]]*$/, "", s)
+			next
+		}
+		s == "web" {
+			line = $0
+			sub(/^[[:space:]]*/, "", line)
+			if (index(line, key) == 1) {
+				rest = substr(line, length(key) + 1)
+				if (rest ~ /^[[:space:]]*=/) {
+					sub(/^[^=]*=[[:space:]]*/, "", line)
+					print line
+					exit
+				}
+			}
+		}
+	' "$CONFIGFILE"
 }
 
 #white_option <option> [value]
 white_option() {
-	[ -n "$1" ] || return 1
-	if [ -n "$(sed -En "/^\[web\]/,/^(\[|$)/{s|^\s*($1) =.*$|\1|p}" "$CONFIGFILE")" ]; then
-		sed -Ei "/^\[web\]/,/^(\[|$)/{s|^(\s*)$1 =.*|\1$1 = $2|}" "$CONFIGFILE"
-	else
-		sed -Ei "/^\[web\]/a\\\t$1 = $2" "$CONFIGFILE"
-	fi
+	local key="$1" val="$2" tmp
+	[ -n "$key" ] || return 1
+	tmp="$CONFIGFILE.$$"
+	awk -v key="$key" -v val="$val" '
+		function flush() {
+			if (in_web && !done) {
+				print "\t" key " = " val
+				done = 1
+			}
+		}
+		BEGIN { in_web = 0; done = 0; seen = 0 }
+		{ sub(/\r$/, "") }
+		/^[[:space:]]*\[[^]]*\][[:space:]]*$/ {
+			flush()
+			in_web = 0
+			head = $0
+			sub(/^[[:space:]]*\[[[:space:]]*/, "", head)
+			sub(/[[:space:]]*\][[:space:]]*$/, "", head)
+			if (tolower(head) == "web") {
+				print
+				in_web = 1
+				seen = 1
+				next
+			}
+			print
+			next
+		}
+		in_web {
+			line = $0
+			sub(/^[[:space:]]*/, "", line)
+			if (index(line, key) == 1) {
+				rest = substr(line, length(key) + 1)
+				if (rest ~ /^[[:space:]]*=/) {
+					if (!done) {
+						print "\t" key " = " val
+						done = 1
+					}
+					next
+				}
+			}
+			print
+			next
+		}
+		{ print }
+		END {
+			flush()
+			if (!seen) {
+				print "[web]"
+				print "\t" key " = " val
+			}
+		}
+	' "$CONFIGFILE" > "$tmp" || { rm -f "$tmp"; return 1; }
+	mv -f "$tmp" "$CONFIGFILE" || { rm -f "$tmp"; return 1; }
+	chmod 0644 "$CONFIGFILE"
+	return 0
 }
 
 white_conf() {
@@ -44,18 +116,96 @@ white_conf() {
 	[ "$key_file" == "$(read_option 'ssl key')" ] || white_option 'ssl key' "$key_file"
 }
 
-write_nginx() {
-local location="/etc/nginx/conf.d/netdata.locations"
-local htpasswd="/etc/nginx/conf.d/netdata.htpasswd"
+# Generate a self-signed certificate when TLS is enabled but no usable pair
+# exists. The LuCI app normally installs a certificate that the browser already
+# trusts (the LuCI/uhttpd certificate); this is the package-only fallback.
+ensure_cert() {
+	local host ip san dir
 
-echo "$userpw" > "$htpasswd"
-[ "$(sed -En "s|^\s*proxy_pass\s+https?://[^:]+:(\d+).*|\1|p" "$location")" == "$port" ] || sed -Ei "/proxy_pass/{s|(\bproxy_pass\b)(\s+.+)?|\1 http://localhost:$port/;|}" "$location"
-if [ "$auth" == "1" ];then
-	sed -Ei "s|#(\bauth_basic_user_file\b)|\1|" "$location"
-else
-	sed -Ei "s|^(\s*)(\bauth_basic_user_file\b)|\1#\2|" "$location"
-fi
-/etc/init.d/nginx reload
+	[ "$ssl" == "1" ] || return 0
+	[ -r "$cert_file" ] && [ -r "$key_file" ] && return 0
+
+	[ -x "$OPENSSL" ] || {
+		logger -t netdata "openssl is missing, cannot generate a certificate"
+		return 1
+	}
+
+	host=$(uci -q get system.@system[0].hostname)
+	[ -n "$host" ] || host=$(cat /proc/sys/kernel/hostname 2>/dev/null)
+	[ -n "$host" ] || host=OpenWrt
+
+	ip=$(uci -q get network.lan.ipaddr)
+	[ -n "$ip" ] && ip=$(echo "$ip" | sed 's#/.*##')
+
+	san="DNS:$host"
+	[ -n "$ip" ] && san="$san,IP:$ip"
+
+	dir=$(dirname "$cert_file")
+	[ -d "$dir" ] || mkdir -p "$dir"
+	dir=$(dirname "$key_file")
+	[ -d "$dir" ] || mkdir -p "$dir"
+
+	if "$OPENSSL" req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+		-keyout "$key_file" -out "$cert_file" -subj "/CN=$host" \
+		-addext "subjectAltName=$san" >/dev/null 2>&1; then
+		:
+	elif "$OPENSSL" req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+		-keyout "$key_file" -out "$cert_file" -subj "/CN=$host" >/dev/null 2>&1; then
+		:
+	else
+		logger -t netdata "failed to generate a TLS certificate"
+		return 1
+	fi
+
+	chmod 0600 "$key_file"
+	chmod 0644 "$cert_file"
+	logger -t netdata "generated a self-signed certificate for $host"
+	return 0
+}
+
+write_nginx() {
+	local location="/etc/nginx/conf.d/netdata.locations"
+	local htpasswd="/etc/nginx/conf.d/netdata.htpasswd"
+
+	[ -x /etc/init.d/nginx ] || {
+		logger -t netdata "nginx is not installed"
+		return 1
+	}
+	[ -f "$location" ] || {
+		logger -t netdata "$location is missing"
+		return 1
+	}
+
+	# Keep the upstream target in sync with the configured port.
+	sed -Ei "s|^([[:space:]]*proxy_pass[[:space:]]+).*|\1http://127.0.0.1:$port/;|" "$location"
+
+	if [ "$auth" == "1" ]; then
+		case "$userpw" in
+			*:?*) ;;
+			*)
+				logger -t netdata "authentication requested without a valid username:password, disabling it"
+				auth=0
+				;;
+		esac
+	fi
+
+	if [ "$auth" == "1" ]; then
+		printf '%s\n' "$userpw" > "$htpasswd"
+		chmod 0644 "$htpasswd"
+		sed -Ei "/^[[:space:]]*#[[:space:]]*auth_basic[[:space:]]/s|^([[:space:]]*)#[[:space:]]*(auth_basic)|\1\2|" "$location"
+		sed -Ei "/^[[:space:]]*#[[:space:]]*auth_basic_user_file/s|^([[:space:]]*)#[[:space:]]*(auth_basic_user_file)|\1\2|" "$location"
+	else
+		# auth_basic without auth_basic_user_file makes nginx return 500,
+		# so both directives have to be commented out together.
+		: > "$htpasswd"
+		chmod 0644 "$htpasswd"
+		sed -Ei "/^[[:space:]]*auth_basic[[:space:]]/s|^([[:space:]]*)(auth_basic)|\1#\2|" "$location"
+		sed -Ei "/^[[:space:]]*auth_basic_user_file/s|^([[:space:]]*)(auth_basic_user_file)|\1#\2|" "$location"
+	fi
+
+	if pidof nginx >/dev/null 2>&1; then
+		/etc/init.d/nginx reload >/dev/null 2>&1 || logger -t netdata "nginx reload failed"
+	fi
 }
 
 netdata_instance() {
@@ -68,21 +218,29 @@ netdata_instance() {
 	procd_open_instance
 	procd_set_param command $APPBINARY -D -c $CONFIGFILE
 	procd_set_param file $CONFIGFILE
-	procd_set_param respawn
+	procd_set_param respawn 3600 5 5
+	procd_set_param term_timeout 10
 	procd_close_instance
 }
 
 start_service() {
 	config_foreach get_config 'netdata'
-	[ "${enabled:=0}" == "0" ] && stop_service && return 1
+
+	if [ "$enabled" != "1" ]; then
+		# The UCI flag is authoritative. Stop a running instance gracefully;
+		# procd sends SIGTERM and waits for Netdata to flush its database.
+		procd_kill netdata >/dev/null 2>&1
+		return 1
+	fi
+
+	ensure_cert || {
+		logger -t netdata "not starting: TLS is enabled but no certificate is available"
+		return 1
+	}
+
 	white_conf
 	[ "$ennginx" == "1" ] && write_nginx
 	netdata_instance
-}
-
-stop_service() {
-	pgrep -f $APPBINARY | xargs kill -9 >/dev/null 2>&1 
-	return 0
 }
 
 service_triggers() {

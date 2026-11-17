@@ -84,13 +84,20 @@ o.validate = function(self, value)
 end
 
 o.write = function(self, section, value)
-	if fs.access("/tmp/AdGuardHometmpconfig.yaml") then
-		fs.move("/tmp/AdGuardHometmpconfig.yaml", configpath)
+	local tmp = "/tmp/AdGuardHometmpconfig.yaml"
+	if not fs.access(tmp) then return end
+
+	-- Keep one previous version before replacing the live configuration.
+	local current = fs.readfile(configpath)
+	if current and current ~= "" then
+		fs.writefile(configpath .. ".bak", current)
 	end
+	fs.move(tmp, configpath)
 end
 
 o.remove = function(self, section, value)
-	fs.writefile(configpath, "")
+	-- Removing the form value must not wipe the live configuration.
+	fs.remove("/tmp/AdGuardHometmpconfig.yaml")
 end
 
 o = s:option(DummyValue, "")
@@ -116,14 +123,8 @@ if fs.access("/tmp/AdGuardHometest.log") then
 end
 
 function m.on_commit(map)
-	local ucitracktest = uci:get("AdGuardHome", "AdGuardHome", "ucitracktest")
-	if ucitracktest == "1" then
-		return
-	elseif ucitracktest == "0" then
-		io.popen("/etc/init.d/AdGuardHome reload &")
-	else
-		fs.writefile("/var/run/AdGlucitest", "")
-	end
+	-- The YAML is not a UCI config, so procd will not reload on its own.
+	io.popen("/etc/init.d/AdGuardHome reload >/dev/null 2>&1 &")
 end
 
 return m

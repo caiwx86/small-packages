@@ -1,50 +1,151 @@
 # LuCI Netdata
-> [Netdata][] is high-fidelity infrastructure monitoring and troubleshooting.
-Open-source, free, preconfigured, opinionated, and always real-time.
 
-### Screenshots
+A modern LuCI front-end for [Netdata](https://github.com/netdata/netdata),
+built for routers running [netdata-ssl](https://github.com/caiwx86/openwrt-netdata-ssl).
 
-![config](.img/config.png "config")  
-![netdata](.img/netdata.png "netdata")  
+Netdata-ssl is a Netdata build with native TLS support, so the dashboard can be
+embedded directly over HTTPS without nginx, extra ports or a reverse proxy.
 
-### How to install
+## Compatibility
 
-1. Goto ~~[releases](https://github.com/muink/luci-app-netdata/tree/releases)~~ [here](https://fantastic-packages.github.io/packages/)
-2. Download the latest version of ipk
-3. Login router and goto **System --> Software**
-4. Upload and install ipk
-5. Reboot if the app is not automatically added in page
-6. Goto **Status --> Netdata**
-7. If after program update. LuCI is not working properly, please reinstall luci-app-netdata.
-8. After you upgrade Netdata, you need to reinstall netdata and luci-app-netdata.
+- OpenWrt 23.05, 24.10 and 25.12 (opkg and apk based images).
+- netdata-ssl (required, provides native HTTPS) and openssl-util.
+- LuCI JS views, Bootstrap and Material themes, mobile and desktop.
+- No nginx dependency and no extra listening port.
 
-### Build
+## What changed
 
-- Compile from OpenWrt/LEDE SDK
+- HTTPS display is fixed at the protocol level: Netdata itself speaks TLS.
+  The app reuses the certificate the browser already trusts for LuCI
+  (/etc/uhttpd.crt, or the nginx certificate), or generates a self-signed one
+  as a fallback. The iframe uses https://<host>:<port>/ directly.
+- Settings are reduced to three options: enable, port and listen address.
+  The old nginx toggle, basic-auth fields, certificate paths and logger switch
+  are gone.
+- The dashboard page has a modern card layout with live status, one-click
+  start/stop/restart, fullscreen, reload and settings actions.
+- Status is refreshed automatically, the iframe is sized to the viewport
+  (no double scrollbars), and stopped/HTTPS states show a clear action card
+  instead of a blank frame.
+- The service port and listen address are written to /etc/netdata/netdata.conf.
+  The stock/netdata-ssl init script applies the port and TLS options itself.
+- The old sed-patched init script is detected and replaced with a clean
+  netdata-ssl-compatible init.
+- The package no longer ships /etc/config/netdata, avoiding a file conflict
+  with netdata-ssl. The file is created by uci-defaults only when missing.
 
-```
-# Take the x86_64 platform as an example
-tar xjf openwrt-sdk-21.02.3-x86-64_gcc-8.4.0_musl.Linux-x86_64.tar.xz
-# Go to the SDK root dir
-cd OpenWrt-sdk-*-x86_64_*
-# First run to generate a .config file
-make menuconfig
-./scripts/feeds update -a
-./scripts/feeds install -a
-# Get Makefile
-git clone --depth 1 --branch master --single-branch --no-checkout https://github.com/muink/luci-app-netdata.git package/luci-app-netdata
-pushd package/luci-app-netdata
-umask 022
-git checkout
-popd
-# Select the package LuCI -> Applications -> luci-app-netdata
-make menuconfig
-# Start compiling
-make package/luci-app-netdata/compile V=99
-```
+## Install
 
-[Netdata]: https://github.com/netdata/netdata
+The netdata-ssl package must be available in your feed. Add the repository as
+a package feed (or copy it to package/netdata-ssl), then:
 
-### License
+    opkg update
+    opkg install luci-app-netdata
 
-- This project is licensed under the [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html)
+On apk based snapshots:
+
+    apk update
+    apk add luci-app-netdata
+
+luci-app-netdata depends on netdata-ssl. Do not install the stock netdata
+package at the same time; both provide /usr/sbin/netdata.
+
+Open LuCI and go to Status -> Netdata.
+
+## Companion netdata-ssl fixes
+
+This revision is designed to be used with the companion openwrt-netdata-ssl
+patch, which fixes several issues in the package itself:
+
+- stop no longer uses "kill -9". The init uses procd's SIGTERM path and a
+  10 second term_timeout, so Netdata can flush its database before exiting.
+- the UCI "enabled" flag is authoritative: disabling it stops the service
+  gracefully instead of leaving it running or kill -9'ing it on the next start.
+- if TLS is enabled but cert_file/key_file are missing, the init generates a
+  self-signed certificate (openssl-util is now a dependency) instead of
+  crash-looping.
+- the nginx helper comments/uncomments both auth_basic and auth_basic_user_file
+  together (auth_basic alone makes nginx return 500), proxies to 127.0.0.1 with
+  HTTP/1.1, and no longer ships a known default admin password.
+- respawn is bounded (3600/5/5) and netdata.conf editing is portable awk instead
+  of fragile sed.
+- the package declares PROVIDES/CONFLICTS netdata, so it is a clean drop-in
+  replacement for the stock package.
+
+Apply the openwrt-netdata-ssl patch before building if you use the packaged
+init; the LuCI app's built-in init fallback is already aligned with it.
+
+## Settings
+
+- Enable: start Netdata now and at boot. Unchecking it and pressing
+  "Save & Apply" stops the service and disables autostart.
+- Service port: HTTP and HTTPS share this port; changing it restarts Netdata.
+- Listen address: all interfaces, or localhost only.
+
+Everything else is automatic:
+
+- When LuCI is opened over HTTPS, the app enables TLS on Netdata.
+- The certificate is reused from the LuCI web server when possible:
+  - uhttpd: /etc/uhttpd.crt and /etc/uhttpd.key
+  - nginx: the certificate configured in /etc/config/nginx, or
+    /etc/nginx/conf.d/_lan.crt
+  - an existing custom certificate configured in UCI is kept
+  - otherwise a self-signed certificate is generated for the router hostname
+    and LAN IP (browsers may ask you to trust it once).
+- When LuCI is opened over HTTP, the dashboard stays on HTTP unless TLS was
+  already enabled. Accessing LuCI over HTTPS later switches it on.
+- The Advanced tab edits /etc/netdata/netdata.conf. Port and TLS keys are
+  managed by the Settings tab; other collectors and update intervals can be
+  adjusted there.
+
+## Security
+
+Netdata does not provide built-in user authentication. Keep it reachable only
+from the LAN (listen address, firewall, or the "[web] allow connections from"
+option) and do not expose the port to the internet. The old nginx basic-auth
+option from previous luci-app-netdata versions is no longer used, because the
+dashboard now runs over native TLS on the Netdata port.
+
+## Defaults in netdata.conf
+
+The netdata-ssl package ships a netdata.conf with "update every = 2" and the
+apps/cgroups collectors disabled, which is suitable for routers. Reduce the
+update frequency further on very slow devices from the Advanced tab.
+
+## Troubleshooting
+
+Dashboard is blank after switching to HTTPS
+: The certificate may not be trusted. Open https://<router>:<port>/ once in a
+  new tab and accept the certificate, then reload LuCI. If the certificate is
+  self-signed, LuCI's own certificate is reused whenever it exists, so this is
+  normally not needed.
+
+"当前 Netdata 构建不支持 TLS"
+: netdata-ssl is not installed, or its init script was replaced. Install /
+  reinstall netdata-ssl, then reload the page.
+
+Port change has no effect
+: Check that the port is free and that the [web] section in the Advanced tab
+  contains "default port = <your port>". The app restarts Netdata after
+  applying.
+
+Service does not start
+: Run "logread -e netdata" and check the port/certificate. The app validates
+  the port and listen address before applying.
+
+Too much CPU
+: Increase "[global] update every" in the Advanced tab and keep cgroups/apps
+  collectors disabled.
+
+## Build
+
+    cd openwrt
+    git clone https://github.com/caiwx86/openwrt-netdata-ssl.git package/netdata-ssl
+    git clone https://github.com/caiwx86/luci-app-netdata.git package/luci-app-netdata
+    make menuconfig
+    # LuCI -> Applications -> luci-app-netdata
+    make package/luci-app-netdata/compile V=s
+
+## License
+
+GPL-3.0. See LICENSE.

@@ -276,6 +276,21 @@ update_core(){
 		} > /tmp/run/AdHlinks.txt
 	fi
 
+	# Append user-provided mirrors from links.txt as additional fallbacks.
+	# The shipped file also contains the official beta/release URLs; filter
+	# them by channel so a stable system never falls back to a beta build.
+	if [ -s /usr/share/AdGuardHome/links.txt ]; then
+		while IFS= read -r link; do
+			[ -n "$link" ] || continue
+			case "$link" in
+			*/adguardhome/beta/*) [ "$release_channel" = "beta" ] || continue ;;
+			*/adguardhome/release/*) [ "$release_channel" = "beta" ] && continue ;;
+			esac
+			link="$(printf '%s' "$link" | sed "s#\${Arch}#$Arch#g; s#\${latest_ver}#$latest_ver#g")"
+			printf '%s\n' "$link" >> /tmp/run/AdHlinks.txt
+		done < /usr/share/AdGuardHome/links.txt
+	fi
+
 	local downloadbin=""
 	local success=""
 
@@ -316,14 +331,51 @@ update_core(){
 	echo "下载完成，如已配置 upx 则进行压缩..."
 	apply_upx "$downloadbin"
 
+	# Validate the downloaded file before touching the running service.
+	local magic
+	magic="$(head -c 4 "$downloadbin" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+	if [ "$magic" != "7f454c46" ]; then
+		echo "错误：下载的文件不是有效的 ELF 可执行文件"
+		cleanup 1
+	fi
+	if ! "$downloadbin" --version >/tmp/AdGuardHome_newver.log 2>&1; then
+		echo "错误：下载的核心无法在当前架构运行"
+		cleanup 1
+	fi
+
+	# Keep one previous core for a manual rollback.
+	if [ -f "$binpath" ]; then
+		if ! cp -f "$binpath" "${binpath}.old"; then
+			echo "错误：无法保存旧核心（磁盘空间不足？）"
+			cleanup 1
+		fi
+	fi
+
 	echo "正在停止服务..."
 	/etc/init.d/AdGuardHome stop nobackup 2>/dev/null
 
 	echo "正在安装新二进制文件..."
-	rm -f "$binpath" 2>/dev/null
-	mv -f "$downloadbin" "$binpath" 2>/dev/null
-	[ $? -ne 0 ] && { echo "mv 失败 - 磁盘空间不足？"; cleanup 1; }
-	chmod 755 "$binpath"
+	# Copy next to the target first so a full disk cannot destroy the old
+	# binary; the final rename is atomic on the same filesystem.
+	local newbin="${binpath}.new"
+	if ! cp -f "$downloadbin" "$newbin"; then
+		echo "复制失败 - 磁盘空间不足？"
+		rm -f "$newbin"
+		/etc/init.d/AdGuardHome start >/dev/null 2>&1
+		cleanup 1
+	fi
+	if ! chmod 755 "$newbin"; then
+		echo "设置执行权限失败"
+		rm -f "$newbin"
+		/etc/init.d/AdGuardHome start >/dev/null 2>&1
+		cleanup 1
+	fi
+	if ! mv -f "$newbin" "$binpath"; then
+		echo "替换核心失败"
+		rm -f "$newbin"
+		/etc/init.d/AdGuardHome start >/dev/null 2>&1
+		cleanup 1
+	fi
 
 	# Refresh the version shown on the overview page without waiting for the
 	# next visit to the base settings.
@@ -339,6 +391,25 @@ update_core(){
 
 	echo "正在启动服务..."
 	/etc/init.d/AdGuardHome start 2>/dev/null
+
+	# Give the daemon a few seconds, then roll back a broken new core.
+	local i=0
+	while [ "$i" -lt 10 ]; do
+		/etc/init.d/AdGuardHome status >/dev/null 2>&1 && break
+		sleep 1
+		i=$((i + 1))
+	done
+	if [ "$(uci -q get AdGuardHome.AdGuardHome.enabled)" = "1" ] &&
+		! /etc/init.d/AdGuardHome status >/dev/null 2>&1 && [ -f "${binpath}.old" ]; then
+		echo "新核心启动失败，正在回滚..."
+		if cp -f "${binpath}.old" "${binpath}.new" &&
+			chmod 755 "${binpath}.new" &&
+			mv -f "${binpath}.new" "$binpath"; then
+			/etc/init.d/AdGuardHome start >/dev/null 2>&1
+			echo "已回滚到上一版核心"
+			cleanup 1
+		fi
+	fi
 
 	echo "AdGuardHome 已成功更新至 ${latest_ver}"
 	cleanup 0

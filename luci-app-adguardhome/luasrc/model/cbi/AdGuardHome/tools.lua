@@ -94,7 +94,8 @@ o.default = nil
 o.optional = false
 
 -- Download links -------------------------------------------------
-o = s:option(TextValue, "downloadlinks", translate("Download links for update"))
+o = s:option(TextValue, "downloadlinks", translate("Download links for update"),
+	"每行一个下载地址，支持 ${Arch} 与 ${latest_ver} 变量；官方源失败后依次尝试。")
 o.optional = false
 o.rows = 4
 o.wrap = "soft"

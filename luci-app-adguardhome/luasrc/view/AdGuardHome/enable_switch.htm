@@ -118,7 +118,7 @@
 				if (!repaired) {
 					if (status)
 						status.innerHTML = '正在自动修复…';
-					XHR.get('<%=url([[admin]], [[services]], [[AdGuardHome]], [[repair]])%>', null, function() {
+					XHR.post('<%=url([[admin]], [[services]], [[AdGuardHome]], [[repair]])%>', { token: L.env.token, auto: 1 }, function() {
 						if (serial !== pollSerial)
 							return;
 						pollTarget(target, serial, 10, true);
@@ -153,7 +153,7 @@
 		if (status)
 			status.innerHTML = next ? '<%:Starting...%>' : '<%:Stopping...%>';
 
-		XHR.get('<%=url([[admin]], [[services]], [[AdGuardHome]], [[toggle]])%>', { enabled: next ? 1 : 0 }, function(x, data) {
+		XHR.post('<%=url([[admin]], [[services]], [[AdGuardHome]], [[toggle]])%>', { enabled: next ? 1 : 0, token: L.env.token }, function(x, data) {
 			btn.disabled = false;
 
 			if (data && data.success) {

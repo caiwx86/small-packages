@@ -91,12 +91,25 @@ set_nft_rules()
 	esac
 
 	command -v nft >/dev/null 2>&1 || return 1
+
+	# Optional: do not intercept DNS arriving from the WAN side.
+	local wans wan wan_line="" quoted=""
+	wans="$(uci -q get AdGuardHome.AdGuardHome.wan_ifname 2>/dev/null)"
+	if [ -n "$wans" ]; then
+		for wan in $wans; do
+			quoted="$quoted\"$wan\", "
+		done
+		quoted="${quoted%, }"
+		wan_line="iifname { $quoted } return"
+	fi
+
 	nft delete table inet "$NFT_TABLE" 2>/dev/null
 
 	{
 		printf 'table inet %s {\n' "$NFT_TABLE"
 		printf '\tchain prerouting {\n'
 		printf '\t\ttype nat hook prerouting priority dstnat; policy accept;\n'
+		[ -n "$wan_line" ] && printf '\t\t%s\n' "$wan_line"
 		printf '\t\tfib daddr type local udp dport 53 redirect to :%s\n' "$port"
 		printf '\t\tfib daddr type local tcp dport 53 redirect to :%s\n' "$port"
 		printf '\t}\n'
@@ -161,6 +174,22 @@ set_legacy_rules()
 		done
 	fi
 
+	# Exclude DNS arriving from the WAN side (return before the redirect).
+	local wans wan proto
+	wans="$(uci -q get AdGuardHome.AdGuardHome.wan_ifname 2>/dev/null)"
+	for wan in $wans; do
+		for proto in udp tcp; do
+			iptables -t nat -C PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 ||
+				iptables -t nat -I PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 ||
+				logger -t AdGuardHome "failed to install WAN return rule for $wan"
+			if command -v ip6tables >/dev/null 2>&1; then
+				ip6tables -t nat -C PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 ||
+					ip6tables -t nat -I PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 ||
+					true
+			fi
+		done
+	done
+
 	[ "$rc" = "0" ] || logger -t AdGuardHome "failed to install some iptables redirect rules"
 	return $rc
 }
@@ -168,7 +197,24 @@ set_legacy_rules()
 clear_legacy_rules()
 {
 	local port="$1" ipv6_server="$2"
-	local IP IPS
+	local IP IPS wans wan proto
+
+	# Remove the WAN return rules first (independent of the DNS port).
+	if command -v iptables >/dev/null 2>&1; then
+		wans="$(uci -q get AdGuardHome.AdGuardHome.wan_ifname 2>/dev/null)"
+		for wan in $wans; do
+			for proto in udp tcp; do
+				while iptables -t nat -C PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1; do
+					iptables -t nat -D PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 || break
+				done
+				if command -v ip6tables >/dev/null 2>&1; then
+					while ip6tables -t nat -C PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1; do
+						ip6tables -t nat -D PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 || break
+					done
+				fi
+			done
+		done
+	fi
 
 	if command -v iptables >/dev/null 2>&1 && [ -n "$port" ] && [ "$port" != "0" ]; then
 		IPS="$(ip -4 addr show 2>/dev/null | awk '/inet /{print $2}' | cut -d'/' -f1 | grep -v '^127\.')"
@@ -258,44 +304,10 @@ managed_pids()
 	printf '%s' "$data" | jsonfilter -e '@.AdGuardHome.instances.*.pid' 2>/dev/null | tr '\n' ' '
 }
 
-kill_orphan_instances()
-{
-	local managed binname pid found=0
-
-	if ! managed="$(managed_pids)"; then
-		logger -t AdGuardHome "cannot query procd; skipping orphan cleanup"
-		return 0
-	fi
-	managed=" $managed "
-	config_get binpath "$CONFIGURATION" binpath "/usr/bin/AdGuardHome"
-	binname="${binpath##*/}"
-	[ -n "$binname" ] || return 0
-
-	for pid in $(pgrep "$binname" 2>/dev/null); do
-		case "$managed" in
-		*" $pid "*) ;;
-		*)
-			found=1
-			logger -t AdGuardHome "stopping orphan process $pid"
-			kill -TERM "$pid" 2>/dev/null
-			;;
-		esac
-	done
-	[ "$found" = "1" ] || return 0
-
-	sleep 1
-	for pid in $(pgrep "$binname" 2>/dev/null); do
-		case "$managed" in
-		*" $pid "*) ;;
-		*) kill -KILL "$pid" 2>/dev/null ;;
-		esac
-	done
-}
-
 repair_service()
 {
 	local enabled binpath configpath redirect
-	local managed binname pid killed=0 changed=0
+	local managed binname pid changed=0
 
 	config_load "$CONFIGURATION"
 	config_get_bool enabled $CONFIGURATION enabled 0
@@ -303,6 +315,22 @@ repair_service()
 	config_get configpath $CONFIGURATION configpath "/etc/AdGuardHome.yaml"
 	config_get redirect $CONFIGURATION redirect "none"
 	binname="${binpath##*/}"
+
+	# Throttle *automatic* repairs only: the UI retries after a failed toggle
+	# and repeated start/stop cycles make a slow start worse.  A manual repair
+	# (button or command line) is always executed.
+	if [ "$1" = "auto" ]; then
+		local now last
+		now="$(date +%s 2>/dev/null)"
+		last="$(cat /var/run/AdGlastrepair 2>/dev/null)"
+		case "$now" in ''|*[!0-9]*) now=0 ;; esac
+		case "$last" in ''|*[!0-9]*) last=0 ;; esac
+		if [ "$now" -gt 0 ] && [ "$last" -gt 0 ] && [ $((now - last)) -lt 30 ]; then
+			echo "repair skipped (cooldown)"
+			return 0
+		fi
+		[ "$now" -gt 0 ] && echo "$now" > /var/run/AdGlastrepair
+	fi
 
 	# A stale stop flag prevents start_service from working.
 	if [ "$enabled" = "1" ] && [ -f /var/run/AdGserverdis ]; then
@@ -319,30 +347,37 @@ repair_service()
 		changed=1
 	fi
 
-	# Processes started outside procd keep the ports busy and make the
-	# service look started while it is not supervised.
+	# Report processes that are not supervised by procd, but do not kill them
+	# automatically.  On a busy router the current instance may not be visible
+	# through ubus yet, and killing a legitimate process leads to a restart
+	# storm (and keeps the web UI busy while nginx is already struggling).
+	local unmanaged=""
 	if managed="$(managed_pids)"; then
 		managed=" $managed "
 		for pid in $(pgrep "$binname" 2>/dev/null); do
 			case "$managed" in
 			*" $pid "*) ;;
-			*)
-				killed=1
-				logger -t AdGuardHome "repair: stopping orphan process $pid"
-				kill -TERM "$pid" 2>/dev/null
-				;;
+			*) unmanaged="$unmanaged $pid" ;;
 			esac
 		done
 	fi
-	if [ "$killed" = "1" ]; then
-		sleep 1
-		for pid in $(pgrep "$binname" 2>/dev/null); do
-			case "$managed" in
-			*" $pid "*) ;;
-			*) kill -KILL "$pid" 2>/dev/null ;;
-			esac
+	if [ -n "$unmanaged" ]; then
+		echo "unmanaged AdGuardHome process(es):$unmanaged (left untouched)"
+		logger -t AdGuardHome "repair: unmanaged process(es):$unmanaged"
+	fi
+
+	# Killing is only done when the administrator explicitly asks for it
+	# with 'repair force'; automatic repairs must never fight procd.
+	if [ "$1" = "force" ] && [ -n "$unmanaged" ]; then
+		for pid in $unmanaged; do
+			logger -t AdGuardHome "repair: force-killing process $pid"
+			kill -TERM "$pid" 2>/dev/null
 		done
-		echo "stopped orphan process(es)"
+		sleep 1
+		for pid in $unmanaged; do
+			kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+		done
+		echo "force-stopped unmanaged process(es):$unmanaged"
 		changed=1
 	fi
 
@@ -416,9 +451,15 @@ rm_port53()
 
 	config_get binpath $CONFIGURATION binpath "/usr/bin/AdGuardHome"
 	local binname="${binpath##*/}"
-	pkill -TERM "$binname" 2>/dev/null
-	sleep 2
-	pkill -KILL "$binname" 2>/dev/null
+	local pids pid tries=0
+	pids="$(pgrep "$binname" 2>/dev/null)"
+	for pid in $pids; do kill -TERM "$pid" 2>/dev/null; done
+	while [ -n "$pids" ] && [ "$tries" -lt 10 ]; do
+		sleep 1
+		tries=$((tries + 1))
+		pids="$(pgrep "$binname" 2>/dev/null)"
+	done
+	for pid in $pids; do kill -KILL "$pid" 2>/dev/null; done
 	/etc/init.d/dnsmasq restart
 }
 
@@ -644,6 +685,7 @@ backup() {
 	mkdir -p "$backupwdpath/data"
 	config_get workdir $CONFIGURATION workdir "/etc/AdGuardHome"
 
+	local retries=0
 	for one in $backupfile; do
 		while : ; do
 			local cpret
@@ -655,11 +697,17 @@ backup() {
 			echo "$cpret"
 			echo "$cpret" | grep -q "no space left on device"
 			if [ $? -eq 0 ]; then
+				retries=$((retries + 1))
+				if [ "$retries" -ge 3 ]; then
+					echo "backup failed: no space left"
+					return 1
+				fi
 				echo "disk full, deleting querylog and retrying..."
 				del_querylog && continue
 				rm -rf "$backupwdpath/data/filters"
 				rm -rf "$workdir/data/filters" && continue
 				echo "backup failed"
+				return 1
 			fi
 			break
 		done
@@ -670,13 +718,15 @@ start_service() {
 	rm -f /var/run/AdGserverdis >/dev/null 2>&1
 	config_load "${CONFIGURATION}"
 
-	# Processes started outside procd would keep the DNS/web port busy.
-	kill_orphan_instances
-
 	config_get hashpass $CONFIGURATION hashpass ""
 	config_get configpath $CONFIGURATION configpath "/etc/AdGuardHome.yaml"
 
-	if [ -n "$hashpass" ]; then
+	# The password must not be written into a non-existent config file.
+	if [ ! -s "$configpath" ] && [ -s /usr/share/AdGuardHome/AdGuardHome_template.yaml ]; then
+		cp -f /usr/share/AdGuardHome/AdGuardHome_template.yaml "$configpath"
+	fi
+
+	if [ -n "$hashpass" ] && [ -s "$configpath" ]; then
 		config_editor "users.password" "$hashpass" "$configpath"
 		uci set "$CONFIGURATION"."$CONFIGURATION".hashpass=""
 		uci commit AdGuardHome
@@ -735,6 +785,12 @@ start_service() {
 	ADDITIONAL_ARGS="$ADDITIONAL_ARGS -p $httpport"
 
 	config_get upprotect $CONFIGURATION upprotect ""
+	# The tools page only persists this option after it has been saved once.
+	# Keep the recommended files by default, otherwise a sysupgrade silently
+	# loses the core and /etc/AdGuardHome.yaml.
+	if ! uci -q get AdGuardHome.AdGuardHome.upprotect >/dev/null 2>&1; then
+		upprotect='$binpath $configpath $workdir/data/sessions.db $workdir/data/stats.db $workdir/data/filters'
+	fi
 	config_get logfile $CONFIGURATION logfile ""
 	mkdir -p /lib/upgrade/keep.d
 	{
@@ -763,6 +819,7 @@ start_service() {
 	config_get gc $CONFIGURATION gc "0"
 	config_get maxprocs $CONFIGURATION maxprocs "0"
 	config_get memlimit $CONFIGURATION memlimit "0"
+	config_get_bool jail $CONFIGURATION jail 0
 
 	procd_open_instance
 	get_tz
@@ -776,28 +833,40 @@ start_service() {
 	[ "$maxprocs" != "0" ] && procd_set_param env GOMAXPROCS="$maxprocs"
 	[ -n "$memlimit" ] && [ "$memlimit" != "0" ] && procd_set_param env GOMEMLIMIT="${memlimit}MiB"
 
-	# DynamicList 写入 uci 是 `list jail_mount '...'` 格式
-	config_list_foreach $CONFIGURATION jail_mount procd_add_jail_mount
-	config_list_foreach $CONFIGURATION jail_mount_rw procd_add_jail_mount_rw
+	# The jail mount list only has an effect when the jail is enabled.
+	if [ "$jail" = "1" ]; then
+		procd_add_jail AdGuardHome log
+		local mp
+		for mp in /dev /etc/ssl /etc/hosts /etc/resolv.conf; do
+			procd_add_jail_mount "$mp"
+		done
+		procd_add_jail_mount "$configpath"
+		procd_add_jail_mount_rw "$workdir"
+		procd_add_jail_mount_rw /tmp
 
-	# 兼容旧的 newline-separated `option jail_mount '...'` 格式（迁移期）
-	local jm jmrw
-	jm="$(uci -q get AdGuardHome.AdGuardHome.jail_mount 2>/dev/null)"
-	case "$jm" in
-		*$'\n'*)
-			printf '%s\n' "$jm" | while IFS= read -r mp; do
-				[ -n "$mp" ] && procd_add_jail_mount "$mp"
-			done
-			;;
-	esac
-	jmrw="$(uci -q get AdGuardHome.AdGuardHome.jail_mount_rw 2>/dev/null)"
-	case "$jmrw" in
-		*$'\n'*)
-			printf '%s\n' "$jmrw" | while IFS= read -r mp; do
-				[ -n "$mp" ] && procd_add_jail_mount_rw "$mp"
-			done
-			;;
-	esac
+		# DynamicList writes `list jail_mount '...'` entries.
+		config_list_foreach $CONFIGURATION jail_mount procd_add_jail_mount
+		config_list_foreach $CONFIGURATION jail_mount_rw procd_add_jail_mount_rw
+
+		# Backwards compatibility with the old newline-separated format.
+		local jm jmrw
+		jm="$(uci -q get AdGuardHome.AdGuardHome.jail_mount 2>/dev/null)"
+		case "$jm" in
+			*$'\n'*)
+				printf '%s\n' "$jm" | while IFS= read -r mp; do
+					[ -n "$mp" ] && procd_add_jail_mount "$mp"
+				done
+				;;
+		esac
+		jmrw="$(uci -q get AdGuardHome.AdGuardHome.jail_mount_rw 2>/dev/null)"
+		case "$jmrw" in
+			*$'\n'*)
+				printf '%s\n' "$jmrw" | while IFS= read -r mp; do
+					[ -n "$mp" ] && procd_add_jail_mount_rw "$mp"
+				done
+				;;
+		esac
+	fi
 
 	procd_set_param command $binpath $ADDITIONAL_ARGS
 	procd_set_param file "$configpath" "/etc/hosts" "/etc/config/AdGuardHome"
@@ -818,9 +887,9 @@ start_service() {
 
 	echo "AdGuardHome service enabled (switch=$enabled)"
 
-	(sleep 10 && \
+	(sleep 30 && \
 		pgrep "${binpath##*/}" >/dev/null 2>&1 || { \
-			logger -t AdGuardHome "no process found after 10s, canceling redirect"; \
+			logger -t AdGuardHome "no process found after 30s, canceling redirect"; \
 			_do_redirect 0; \
 		}) &
 
@@ -891,6 +960,8 @@ stop_service()
 		(
 			sleep 8
 			[ -f /var/run/AdGserverdis ] || exit 0
+			# Do not kill anything if the service was re-enabled meanwhile.
+			[ "$(uci -q get AdGuardHome.AdGuardHome.enabled)" = "1" ] && exit 0
 			for pid in $oldpids; do
 				logger -t AdGuardHome "force-killing stuck process $pid"
 				kill -KILL "$pid" 2>/dev/null

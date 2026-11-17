@@ -1,0 +1,390 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0
+#
+# First-install / upgrade migration for luci-app-netdata.
+
+CTL=/usr/libexec/luci-app-netdata/netdata-ctl
+INIT=/etc/init.d/netdata
+
+# ---------------------------------------------------------------------------
+# 1. The netdata-ssl package owns /etc/config/netdata. Create it only when it
+#    is missing (stock netdata images) so both variants work.
+# ---------------------------------------------------------------------------
+if [ ! -f /etc/config/netdata ]; then
+	mkdir -p /etc/config
+	cat > /etc/config/netdata <<'CONFEOF'
+
+config netdata 'netdata'
+	option enabled '1'
+	option port '19999'
+CONFEOF
+fi
+
+if ! uci -q get netdata.@netdata[0] >/dev/null 2>&1; then
+	uci -q add netdata netdata >/dev/null 2>&1
+fi
+
+get_opt() {
+	uci -q get "netdata.@netdata[0].$1" 2>/dev/null
+}
+
+set_opt() {
+	uci -q set "netdata.@netdata[0].$1=$2"
+}
+
+del_opt() {
+	uci -q delete "netdata.@netdata[0].$1"
+}
+
+# ---------------------------------------------------------------------------
+# 2. Restore the init script if an old luci-app-netdata version patched it with
+#    sed. The old patch forced "-p port", killed netdata with SIGKILL and was
+#    lost on every netdata-ssl upgrade. The replacement below is the
+#    netdata-ssl-compatible init without the sed hack.
+# ---------------------------------------------------------------------------
+netdata_ssl_installed() {
+	if command -v opkg >/dev/null 2>&1; then
+		opkg list-installed 2>/dev/null | grep -q '^netdata-ssl ' && return 0
+	fi
+	if command -v apk >/dev/null 2>&1; then
+		apk info -e netdata-ssl >/dev/null 2>&1 && return 0
+	fi
+	return 1
+}
+
+if [ -f "$INIT" ] && grep -q 'luci_overridden' "$INIT" 2>/dev/null; then
+	restore_init=1
+elif [ -f "$INIT" ] && ! grep -q 'white_conf' "$INIT" 2>/dev/null && netdata_ssl_installed; then
+	# netdata-ssl was installed over a stock init left behind by an earlier
+	# luci-app-netdata build.
+	restore_init=1
+else
+	restore_init=0
+fi
+
+if [ "$restore_init" = "1" ]; then
+	logger -t luci-app-netdata "restoring patched $INIT"
+	cp -f "$INIT" "$INIT.old-luci" 2>/dev/null
+	cat > "$INIT" <<'NDINIT'
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+
+APPBINARY=/usr/sbin/netdata
+CONFIGFILE=/etc/netdata/netdata.conf
+OPENSSL=/usr/bin/openssl
+
+config_load 'netdata'
+
+get_config() {
+	config_get_bool enabled $1 enabled 0
+	config_get port $1 port 19999
+	config_get_bool ssl $1 enable_ssl 0
+	config_get cert_file $1 cert_file '/etc/netdata/cert.crt'
+	config_get key_file $1 key_file '/etc/netdata/cert.key'
+	config_get_bool ennginx $1 nginx_support 0
+	config_get_bool auth $1 auth 0
+	config_get userpw $1 user_passwd ''
+
+	[ -n "$cert_file" ] || cert_file='/etc/netdata/cert.crt'
+	[ -n "$key_file" ] || key_file='/etc/netdata/cert.key'
+	[ "$ennginx" == "1" ] && ssl=0
+}
+
+#read_option <option>
+read_option() {
+	[ -n "$1" ] || return 1
+	awk -v key="$1" '
+		/^[[:space:]]*\[/ {
+			s = tolower($0)
+			gsub(/^[[:space:]]*\[/, "", s)
+			gsub(/\][[:space:]]*$/, "", s)
+			next
+		}
+		s == "web" {
+			line = $0
+			sub(/^[[:space:]]*/, "", line)
+			if (index(line, key) == 1) {
+				rest = substr(line, length(key) + 1)
+				if (rest ~ /^[[:space:]]*=/) {
+					sub(/^[^=]*=[[:space:]]*/, "", line)
+					print line
+					exit
+				}
+			}
+		}
+	' "$CONFIGFILE"
+}
+
+#white_option <option> [value]
+white_option() {
+	local key="$1" val="$2" tmp
+	[ -n "$key" ] || return 1
+	tmp="$CONFIGFILE.$$"
+	awk -v key="$key" -v val="$val" '
+		function flush() {
+			if (in_web && !done) {
+				print "\t" key " = " val
+				done = 1
+			}
+		}
+		BEGIN { in_web = 0; done = 0; seen = 0 }
+		{ sub(/\r$/, "") }
+		/^[[:space:]]*\[[^]]*\][[:space:]]*$/ {
+			flush()
+			in_web = 0
+			head = $0
+			sub(/^[[:space:]]*\[[[:space:]]*/, "", head)
+			sub(/[[:space:]]*\][[:space:]]*$/, "", head)
+			if (tolower(head) == "web") {
+				print
+				in_web = 1
+				seen = 1
+				next
+			}
+			print
+			next
+		}
+		in_web {
+			line = $0
+			sub(/^[[:space:]]*/, "", line)
+			if (index(line, key) == 1) {
+				rest = substr(line, length(key) + 1)
+				if (rest ~ /^[[:space:]]*=/) {
+					if (!done) {
+						print "\t" key " = " val
+						done = 1
+					}
+					next
+				}
+			}
+			print
+			next
+		}
+		{ print }
+		END {
+			flush()
+			if (!seen) {
+				print "[web]"
+				print "\t" key " = " val
+			}
+		}
+	' "$CONFIGFILE" > "$tmp" || { rm -f "$tmp"; return 1; }
+	mv -f "$tmp" "$CONFIGFILE" || { rm -f "$tmp"; return 1; }
+	chmod 0644 "$CONFIGFILE"
+	return 0
+}
+
+white_conf() {
+	[ "$ssl" == "0" ] && local cert_file='' key_file=''
+
+	[ "$port" == "$(read_option 'default port')" ] || white_option 'default port' "$port"
+	[ "$cert_file" == "$(read_option 'ssl certificate')" ] || white_option 'ssl certificate' "$cert_file"
+	[ "$key_file" == "$(read_option 'ssl key')" ] || white_option 'ssl key' "$key_file"
+}
+
+# Generate a self-signed certificate when TLS is enabled but no usable pair
+# exists. The LuCI app normally installs a certificate that the browser already
+# trusts (the LuCI/uhttpd certificate); this is the package-only fallback.
+ensure_cert() {
+	local host ip san dir
+
+	[ "$ssl" == "1" ] || return 0
+	[ -r "$cert_file" ] && [ -r "$key_file" ] && return 0
+
+	[ -x "$OPENSSL" ] || {
+		logger -t netdata "openssl is missing, cannot generate a certificate"
+		return 1
+	}
+
+	host=$(uci -q get system.@system[0].hostname)
+	[ -n "$host" ] || host=$(cat /proc/sys/kernel/hostname 2>/dev/null)
+	[ -n "$host" ] || host=OpenWrt
+
+	ip=$(uci -q get network.lan.ipaddr)
+	[ -n "$ip" ] && ip=$(echo "$ip" | sed 's#/.*##')
+
+	san="DNS:$host"
+	[ -n "$ip" ] && san="$san,IP:$ip"
+
+	dir=$(dirname "$cert_file")
+	[ -d "$dir" ] || mkdir -p "$dir"
+	dir=$(dirname "$key_file")
+	[ -d "$dir" ] || mkdir -p "$dir"
+
+	if "$OPENSSL" req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+		-keyout "$key_file" -out "$cert_file" -subj "/CN=$host" \
+		-addext "subjectAltName=$san" >/dev/null 2>&1; then
+		:
+	elif "$OPENSSL" req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+		-keyout "$key_file" -out "$cert_file" -subj "/CN=$host" >/dev/null 2>&1; then
+		:
+	else
+		logger -t netdata "failed to generate a TLS certificate"
+		return 1
+	fi
+
+	chmod 0600 "$key_file"
+	chmod 0644 "$cert_file"
+	logger -t netdata "generated a self-signed certificate for $host"
+	return 0
+}
+
+write_nginx() {
+	local location="/etc/nginx/conf.d/netdata.locations"
+	local htpasswd="/etc/nginx/conf.d/netdata.htpasswd"
+
+	[ -x /etc/init.d/nginx ] || {
+		logger -t netdata "nginx is not installed"
+		return 1
+	}
+	[ -f "$location" ] || {
+		logger -t netdata "$location is missing"
+		return 1
+	}
+
+	# Keep the upstream target in sync with the configured port.
+	sed -Ei "s|^([[:space:]]*proxy_pass[[:space:]]+).*|\1http://127.0.0.1:$port/;|" "$location"
+
+	if [ "$auth" == "1" ]; then
+		case "$userpw" in
+			*:?*) ;;
+			*)
+				logger -t netdata "authentication requested without a valid username:password, disabling it"
+				auth=0
+				;;
+		esac
+	fi
+
+	if [ "$auth" == "1" ]; then
+		printf '%s\n' "$userpw" > "$htpasswd"
+		chmod 0644 "$htpasswd"
+		sed -Ei "/^[[:space:]]*#[[:space:]]*auth_basic[[:space:]]/s|^([[:space:]]*)#[[:space:]]*(auth_basic)|\1\2|" "$location"
+		sed -Ei "/^[[:space:]]*#[[:space:]]*auth_basic_user_file/s|^([[:space:]]*)#[[:space:]]*(auth_basic_user_file)|\1\2|" "$location"
+	else
+		# auth_basic without auth_basic_user_file makes nginx return 500,
+		# so both directives have to be commented out together.
+		: > "$htpasswd"
+		chmod 0644 "$htpasswd"
+		sed -Ei "/^[[:space:]]*auth_basic[[:space:]]/s|^([[:space:]]*)(auth_basic)|\1#\2|" "$location"
+		sed -Ei "/^[[:space:]]*auth_basic_user_file/s|^([[:space:]]*)(auth_basic_user_file)|\1#\2|" "$location"
+	fi
+
+	if pidof nginx >/dev/null 2>&1; then
+		/etc/init.d/nginx reload >/dev/null 2>&1 || logger -t netdata "nginx reload failed"
+	fi
+}
+
+netdata_instance() {
+	mkdir -m 0755 -p /var/cache/netdata
+	chown nobody /var/cache/netdata
+	mkdir -m 0755 -p /var/lib/netdata
+	chown nobody /var/lib/netdata
+	mkdir -m 0755 -p /var/log/netdata
+	chown nobody /var/log/netdata
+	procd_open_instance
+	procd_set_param command $APPBINARY -D -c $CONFIGFILE
+	procd_set_param file $CONFIGFILE
+	procd_set_param respawn 3600 5 5
+	procd_set_param term_timeout 10
+	procd_close_instance
+}
+
+start_service() {
+	config_foreach get_config 'netdata'
+
+	if [ "$enabled" != "1" ]; then
+		# The UCI flag is authoritative. Stop a running instance gracefully;
+		# procd sends SIGTERM and waits for Netdata to flush its database.
+		procd_kill netdata >/dev/null 2>&1
+		return 1
+	fi
+
+	ensure_cert || {
+		logger -t netdata "not starting: TLS is enabled but no certificate is available"
+		return 1
+	}
+
+	white_conf
+	[ "$ennginx" == "1" ] && write_nginx
+	netdata_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger 'netdata'
+}
+NDINIT
+	chmod 0755 "$INIT"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Migrate old options from the master and nossl_version branches.
+# ---------------------------------------------------------------------------
+legacy_ssl=$(get_opt ssl_sw)
+if [ -n "$legacy_ssl" ]; then
+	set_opt enable_ssl "$legacy_ssl"
+	del_opt ssl_sw
+fi
+
+# The old nginx toggle meant "serve over HTTPS"; native TLS is better now.
+if [ "$(get_opt nginx_support)" = "1" ]; then
+	set_opt enable_ssl 1
+fi
+del_opt nginx_support
+
+# netdata-ssl supports nginx basic auth, but the app now uses native TLS only.
+del_opt auth
+del_opt user_passwd
+del_opt logger
+
+if [ "$(get_opt enable_ssl)" = "1" ] && [ -z "$(get_opt cert_file)" ]; then
+	set_opt cert_file /etc/netdata/cert.crt
+fi
+if [ "$(get_opt enable_ssl)" = "1" ] && [ -z "$(get_opt key_file)" ]; then
+	set_opt key_file /etc/netdata/cert.key
+fi
+
+[ -n "$(get_opt enabled)" ] || set_opt enabled 1
+[ -n "$(get_opt bind)" ] || set_opt bind '*'
+[ -n "$(get_opt enable_ssl)" ] || set_opt enable_ssl 0
+[ -n "$(get_opt cert_file)" ] || set_opt cert_file /etc/netdata/cert.crt
+[ -n "$(get_opt key_file)" ] || set_opt key_file /etc/netdata/cert.key
+
+port=$(get_opt port)
+case "$port" in
+	''|*[!0-9]*) port=19999 ;;
+esac
+if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+	port=19999
+fi
+set_opt port "$port"
+
+uci -q commit netdata
+
+# ---------------------------------------------------------------------------
+# 4. Write port/bind into netdata.conf and prepare a TLS certificate when
+#    HTTPS was previously requested.
+# ---------------------------------------------------------------------------
+if [ -x "$CTL" ]; then
+	"$CTL" sync >/dev/null 2>&1
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Keep procd autostart in sync and start netdata when enabled.
+# ---------------------------------------------------------------------------
+if [ -x "$INIT" ]; then
+	case "$(get_opt enabled)" in
+		1|true|on|yes)
+			"$INIT" enable >/dev/null 2>&1
+			if ! pidof netdata >/dev/null 2>&1; then
+				"$INIT" start >/dev/null 2>&1
+			fi
+			;;
+		*)
+			"$INIT" disable >/dev/null 2>&1
+			;;
+	esac
+fi
+
+exit 0

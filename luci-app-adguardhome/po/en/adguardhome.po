@@ -1,0 +1,186 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: luci-app-adguardhome\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: en\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "基本设置"
+msgstr "Basic settings"
+
+msgid "路径与日志"
+msgstr "Paths & logs"
+
+msgid "高级设置"
+msgstr "Advanced settings"
+
+msgid "重定向模式"
+msgstr "Redirect mode"
+
+msgid "诊断"
+msgstr "Diagnostics"
+
+msgid "服务、配置、端口、防火墙与日志检查"
+msgstr "Service, configuration, ports, firewall and log checks"
+
+msgid "WAN 侧排除接口"
+msgstr "WAN-side excluded interfaces"
+
+msgid "从这些接口进入的 53 端口 DNS 请求不会重定向到 AdGuard Home，避免在 WAN 侧形成开放解析器。"
+msgstr "DNS requests to port 53 arriving on these interfaces are not redirected to AdGuard Home, avoiding an open resolver on the WAN side."
+
+msgid "启用 procd 文件隔离（实验性）"
+msgstr "Enable procd file isolation (experimental)"
+
+msgid "开启后，上面的“只读/读写文件访问”列表才会生效。需要内核支持 namespaces，可能影响证书或数据目录读取，默认关闭。"
+msgstr "Only effective after enabling this option; the read-only/read-write file lists above are then applied. Requires kernel namespace support and may affect certificate or data directory access. Disabled by default."
+
+msgid "不启用"
+msgstr "Disabled"
+
+msgid "作为 dnsmasq 上游服务器"
+msgstr "As dnsmasq upstream"
+
+msgid "将 53 端口劫持到 AdGuardHome"
+msgstr "Redirect port 53 to AdGuardHome"
+
+msgid "使用 53 端口替代 dnsmasq"
+msgstr "Use port 53 instead of dnsmasq"
+
+msgid "AdGuardHome 可以读取的目录或文件路径，每行一项。"
+msgstr "Directories or files AdGuard Home may read, one per line."
+
+msgid "AdGuardHome 可以读写的目录或文件路径，每行一项。"
+msgstr "Directories or files AdGuard Home may read and write, one per line."
+
+msgid "只读文件访问"
+msgstr "Read-only file access"
+
+msgid "读写文件访问"
+msgstr "Read-write file access"
+
+msgid "内存上限 (MiB)"
+msgstr "Memory limit (MiB)"
+
+msgid "达到阈值时主动触发 GC，避免被系统 OOM 杀进程。留空 = 不限制。建议设为系统内存的 50%。"
+msgstr "Trigger GC when the limit is reached to avoid the OOM killer. Empty = unlimited. 50% of system memory is recommended."
+
+msgid "更新通道"
+msgstr "Update channel"
+
+msgid "正式版 (stable)"
+msgstr "Stable"
+
+msgid "预发布版 (beta)"
+msgstr "Beta"
+
+msgid "正式版稳定；预发布版抢先体验 AdGuard 团队 beta 构建。"
+msgstr "Stable channel; the beta channel gets AdGuard beta builds early."
+
+msgid "核心版本"
+msgstr "Core version"
+
+msgid "服务状态"
+msgstr "Service status"
+
+msgid "运行中"
+msgstr "Running"
+
+msgid "未运行"
+msgstr "Not running"
+
+msgid "未重定向"
+msgstr "Not redirected"
+
+msgid "未安装"
+msgstr "Not installed"
+
+msgid "配置文件缺失"
+msgstr "Configuration missing"
+
+msgid "服务未启动"
+msgstr "Service not started"
+
+msgid "正在检测…"
+msgstr "Checking…"
+
+msgid "打开 Web 控制台"
+msgstr "Open web console"
+
+msgid "查看日志"
+msgstr "View logs"
+
+msgid "配置「基础设置 → 重定向模式」"
+msgstr "Configure in Basic settings → Redirect mode"
+
+msgid "点击「基础设置 → 更新核心版本」下载"
+msgstr "Download from Basic settings → Update core"
+
+msgid "运行日志未配置"
+msgstr "Runtime log not configured"
+
+msgid "请在「基础设置 → 路径与日志 → 运行日志」填入日志路径（如 /tmp/AdGuardHome.log），或填 syslog 写入系统日志。"
+msgstr "Set a log path in Basic settings → Paths & logs → Runtime log (e.g. /tmp/AdGuardHome.log), or use syslog."
+
+msgid "去设置"
+msgstr "Go to settings"
+
+msgid "运维"
+msgstr "Maintenance"
+
+msgid "改密、备份、计划任务、下载源"
+msgstr "Password, backup, cron jobs and download sources"
+
+msgid "日志文件"
+msgstr "Log file"
+
+msgid "核心执行文件 (推荐)"
+msgstr "Core binary (recommended)"
+
+msgid "配置文件 (必选)"
+msgstr "Configuration (required)"
+
+msgid "登录会话 sessions.db (推荐)"
+msgstr "Sessions sessions.db (recommended)"
+
+msgid "统计 stats.db (推荐)"
+msgstr "Statistics stats.db (recommended)"
+
+msgid "查询日志 querylog.json (占空间)"
+msgstr "Query log querylog.json (uses space)"
+
+msgid "过滤规则 filters (推荐)"
+msgstr "Filters (recommended)"
+
+msgid "刷固件 (sysupgrade) 时保留这些文件。普通用户按推荐勾选即可：核心 + 配置 + filters + sessions.db + stats.db。日志和 querylog 通常不需要保留（querylog 可能占数十 MB）。"
+msgstr "Files kept across sysupgrade. The recommended set is core + configuration + filters + sessions.db + stats.db. Logs and querylog are usually not needed (querylog can be tens of MB)."
+
+msgid "关机时把这些文件复制到下方「备份工作目录路径」，下次开机如果 workdir/data 为空会自动恢复。仅当工作目录位于 tmpfs（如 /tmp）时才需要勾选，持久化路径无需备份。"
+msgstr "Copy these files to the backup workdir on shutdown and restore them on boot when workdir/data is empty. Only useful when the workdir is on tmpfs (e.g. /tmp)."
+
+msgid "即将用模板覆盖当前 YAML，未保存的修改将丢失，是否继续？"
+msgstr "Replace the current YAML with the template? Unsaved changes will be lost."
+
+msgid "即将覆盖 AdGuardHome.yaml，请确认已备份配置。继续保存？"
+msgstr "Overwrite AdGuardHome.yaml? Make sure the configuration is backed up."
+
+msgid "请补全此字段"
+msgstr "Please fill in this field"
+
+msgid "创建备份"
+msgstr "Create backup"
+
+msgid "恢复备份"
+msgstr "Restore backup"
+
+msgid "回滚核心"
+msgstr "Roll back core"
+
+msgid "备份配置"
+msgstr "Back up configuration"
+
+msgid "恢复配置"
+msgstr "Restore configuration"
+
+msgid "复制诊断信息"
+msgstr "Copy diagnostics"

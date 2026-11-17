@@ -9,9 +9,9 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=netdata
 PKG_VERSION:=1.33.1
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 
-PKG_MAINTAINER:=Josef Schlehofer <pepe.schlehofer@gmail.com>, Daniel Engberg <daniel.engberg.lists@pyret.net>
+PKG_MAINTAINER:=Josef Schlehofer <pepe.schlehofer@gmail.com>, Daniel Engberg <daniel.engberg.lists@pyret.net>, caiwx86 <caiwx86@users.noreply.github.com>
 PKG_LICENSE:=GPL-3.0-or-later
 PKG_LICENSE_FILES:=COPYING
 PKG_CPE_ID:=cpe:/a:my-netdata:netdata
@@ -31,18 +31,20 @@ include $(INCLUDE_DIR)/package.mk
 define Package/netdata-ssl
   SECTION:=admin
   CATEGORY:=Administration
-  DEPENDS:=+zlib +libuuid +libuv +libmnl +libjson-c +libopenssl +coreutils-timeout
-  TITLE:=Real-time performance monitoring tool
+  DEPENDS:=+zlib +libuuid +libuv +libmnl +libjson-c +libopenssl +openssl-util +coreutils-timeout
+  TITLE:=Real-time performance monitoring tool (native TLS)
   URL:=https://www.netdata.cloud/
-  #PROVIDES:=netdata
-  #CONFLICTS:=netdata
-  #VARIANT:=ssl
-  #DEFAULT_VARIANT:=1
+  PROVIDES:=netdata
+  CONFLICTS:=netdata
 endef
 
 define Package/netdata-ssl/description
   netdata is a highly optimized Linux daemon providing real-time performance
   monitoring for Linux systems, applications and SNMP devices over the web.
+
+  This variant is built with OpenSSL and serves the dashboard over HTTPS on the
+  same port. It replaces the stock netdata package and must not be installed
+  alongside it.
 
   If you want to use Python plugins install python3, python3-yaml and
   python3-urllib3

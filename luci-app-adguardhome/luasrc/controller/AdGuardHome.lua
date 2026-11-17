@@ -4,14 +4,55 @@ local fs = require "nixio.fs"
 local http = require "luci.http"
 local uci = require "luci.model.uci".cursor()
 
-local function service_running()
-	local binpath = uci:get("AdGuardHome", "AdGuardHome", "binpath") or "/usr/bin/AdGuardHome"
+local function shq(value)
+	return "'" .. tostring(value or ""):gsub("'", "'\\''") .. "'"
+end
 
-	if not fs.access(binpath) then
+local function binpath()
+	return uci:get("AdGuardHome", "AdGuardHome", "binpath") or "/usr/bin/AdGuardHome"
+end
+
+local function service_pids()
+	local name = binpath():match("([^/]+)$")
+	local pids = {}
+	if not name then return pids end
+	for path in fs.glob("/proc/*/comm") do
+		local comm = fs.readfile(path)
+		if comm then
+			comm = comm:gsub("%s+$", "")
+			if comm == name then
+				local pid = path:match("/proc/(%d+)/comm")
+				if pid then pids[#pids + 1] = pid end
+			end
+		end
+	end
+	table.sort(pids, function(a, b) return tonumber(a) < tonumber(b) end)
+	return pids
+end
+
+local function service_running()
+	if not fs.access(binpath()) then
 		return false
 	end
+	return #service_pids() > 0
+end
 
-	return luci.sys.call("/etc/init.d/AdGuardHome status >/dev/null 2>&1") == 0
+local function require_post()
+	if http.getenv("REQUEST_METHOD") ~= "POST" then
+		http.status(405, "Method Not Allowed")
+		http.prepare_content("application/json")
+		http.write_json({ success = false, message = "POST required" })
+		return false
+	end
+	-- LuCI's session cookie plus POST is required here.  The token is sent by
+	-- the UI for future stricter checks, but not enforced to stay compatible
+	-- with older LuCI releases where the token name differs.
+	return true
+end
+
+local function json_result(result)
+	http.prepare_content("application/json")
+	http.write_json(result)
 end
 
 function index()
@@ -33,6 +74,8 @@ function index()
 			form("AdGuardHome/log"), _("日志"), 4).leaf = true
 		entry({"admin", "services", "AdGuardHome", "manual"},
 			cbi("AdGuardHome/manual"), _("手动配置"), 5).leaf = true
+		entry({"admin", "services", "AdGuardHome", "diag"},
+			cbi("AdGuardHome/diag"), _("诊断"), 6).leaf = true
 	end
 
 	-- API 路由在新旧版本均需注册
@@ -54,6 +97,14 @@ function index()
 		call("get_template_config"), nil)
 	entry({"admin", "services", "AdGuardHome", "repair"},
 		call("do_repair"), nil)
+	entry({"admin", "services", "AdGuardHome", "backupconfig"},
+		call("do_backup_config"), nil)
+	entry({"admin", "services", "AdGuardHome", "restoreconfig"},
+		call("do_restore_config"), nil)
+	entry({"admin", "services", "AdGuardHome", "rollbackcore"},
+		call("do_rollback_core"), nil)
+	entry({"admin", "services", "AdGuardHome", "systemlog"},
+		call("get_system_log"), nil)
 end
 
 local function gen_template_config()
@@ -109,12 +160,14 @@ function act_status()
 end
 
 function do_repair()
-	local output = luci.sys.exec("/etc/init.d/AdGuardHome repair 2>&1")
+	if not require_post() then return end
+	local auto = http.formvalue("auto") == "1" and " auto" or ""
+	local output = luci.sys.exec("/etc/init.d/AdGuardHome repair" .. auto .. " 2>&1")
 	local enabled = uci:get("AdGuardHome", "AdGuardHome", "enabled") == "1"
 	local running = service_running()
 	-- Starting procd instances is asynchronous; give them a moment before
 	-- reporting the result to the page.
-	for _ = 1, 5 do
+	for _ = 1, 3 do
 		if running or not enabled then break end
 		luci.sys.call("sleep 1")
 		running = service_running()
@@ -136,7 +189,110 @@ function do_repair()
 	http.write_json(result)
 end
 
+function do_backup_config()
+	if not require_post() then return end
+	local configpath = uci:get("AdGuardHome", "AdGuardHome", "configpath") or "/etc/AdGuardHome.yaml"
+	local data = fs.readfile(configpath)
+	if not data then
+		json_result({ success = false, message = "配置文件不存在" })
+		return
+	end
+
+	local target = configpath .. ".bak." .. os.date("%Y%m%d-%H%M%S")
+	if fs.writefile(target, data) == nil then
+		json_result({ success = false, message = "备份写入失败" })
+		return
+	end
+
+	local list = {}
+	for path in fs.glob(configpath .. ".bak.*") do list[#list + 1] = path end
+	table.sort(list)
+	while #list > 5 do
+		fs.remove(list[1])
+		table.remove(list, 1)
+	end
+
+	json_result({ success = true, file = target })
+end
+
+function do_restore_config()
+	if not require_post() then return end
+	local configpath = uci:get("AdGuardHome", "AdGuardHome", "configpath") or "/etc/AdGuardHome.yaml"
+	local candidates = {}
+	for path in fs.glob(configpath .. ".bak*") do
+		if path ~= configpath .. ".before-restore" then
+			candidates[#candidates + 1] = path
+		end
+	end
+	table.sort(candidates)
+	local src = candidates[#candidates]
+	if not src then
+		json_result({ success = false, message = "没有可用备份" })
+		return
+	end
+
+	local binary = binpath()
+	-- Only validate when the current core can execute; a broken core must not
+	-- prevent restoring a known-good configuration.
+	if fs.access(binary) and luci.sys.call(shq(binary) .. " --version >/dev/null 2>&1") == 0 then
+		local ret = luci.sys.call(shq(binary) .. " -c " .. shq(src) .. " --check-config >/dev/null 2>&1")
+		if ret ~= 0 then
+			json_result({ success = false, message = "备份配置未通过校验", file = src })
+			return
+		end
+	end
+
+	local current = fs.readfile(configpath)
+	if current then
+		fs.writefile(configpath .. ".before-restore", current)
+	end
+	local data = fs.readfile(src)
+	if not data or fs.writefile(configpath, data) == nil then
+		json_result({ success = false, message = "恢复失败" })
+		return
+	end
+
+	luci.sys.call("/etc/init.d/AdGuardHome reload >/dev/null 2>&1 &")
+	json_result({ success = true, file = src })
+end
+
+function do_rollback_core()
+	if not require_post() then return end
+	local binary = binpath()
+	local old = binary .. ".old"
+	if not fs.access(old) then
+		json_result({ success = false, message = "没有可回滚的核心" })
+		return
+	end
+
+	local data = fs.readfile(old)
+	if not data then
+		json_result({ success = false, message = "读取旧核心失败" })
+		return
+	end
+	local tmp = binary .. ".new"
+	if fs.writefile(tmp, data) == nil then
+		json_result({ success = false, message = "写入临时核心失败" })
+		return
+	end
+	luci.sys.call("chmod 755 " .. shq(tmp))
+	if luci.sys.call("mv -f " .. shq(tmp) .. " " .. shq(binary)) ~= 0 then
+		fs.remove(tmp)
+		json_result({ success = false, message = "替换核心失败" })
+		return
+	end
+
+	luci.sys.call("/etc/init.d/AdGuardHome reload >/dev/null 2>&1 &")
+	json_result({ success = true })
+end
+
+function get_system_log()
+	http.prepare_content("text/plain; charset=utf-8")
+	http.write(luci.sys.exec("logread -e AdGuardHome 2>/dev/null | tail -n 400") or "")
+end
+
 function toggle_service()
+	if not require_post() then return end
 	local enabled = http.formvalue("enabled") == "1" and "1" or "0"
 	local old_enabled = uci:get("AdGuardHome", "AdGuardHome", "enabled") == "1" and "1" or "0"
 	local result = {
@@ -203,6 +359,7 @@ function toggle_service()
 end
 
 function do_update()
+	if not require_post() then return end
 	fs.writefile("/var/run/lucilogpos", "0")
 	http.prepare_content("application/json")
 	http.write('{}')
@@ -269,6 +426,7 @@ function get_log()
 end
 
 function do_dellog()
+	if not require_post() then return end
 	local logfile = uci:get("AdGuardHome", "AdGuardHome", "logfile")
 	if logfile and logfile ~= "" and logfile ~= "syslog" then
 		fs.writefile(logfile, "")
@@ -300,6 +458,10 @@ function check_update()
 		http.write(content)
 	else
 		-- Plain-text end marker: a NUL byte here made the template binary.
-		http.write(content .. "\n__AGH_UPDATE_FINISHED__\n")
+		local marker = "__AGH_UPDATE_FINISHED__"
+		if fs.access("/var/run/update_core_error") then
+			marker = "__AGH_UPDATE_FINISHED_ERROR__"
+		end
+		http.write(content .. "\n" .. marker .. "\n")
 	end
 end
