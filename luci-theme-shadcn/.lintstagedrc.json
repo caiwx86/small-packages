@@ -1,3 +1,0 @@
-{
-  "*": "prettier --config .dev/prettier.config.mjs --ignore-path .prettierignore --ignore-unknown --write"
-}
