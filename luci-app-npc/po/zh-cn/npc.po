@@ -1,0 +1,137 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "NPS Client"
+msgstr "NPS 内网穿透客户端"
+
+msgid "Basic Settings"
+msgstr "基本设置"
+
+msgid "Advanced Settings"
+msgstr "高级设置"
+
+msgid "Install and Update"
+msgstr "安装与更新"
+
+msgid "Enable"
+msgstr "启用"
+
+msgid "Quick Import"
+msgstr "快速导入"
+
+msgid "Paste the command or the links copied from the NPS web page \"Launch command\" and save: every -launch becomes a connection and every -L a local access below; links already present are skipped."
+msgstr "粘贴从 NPS 网页“启动命令”复制的整条命令或链接（可多行）并保存：每个 -launch 成为下方的一条连接，每个 -L 成为一条本地访问；已存在的相同链接会跳过。"
+
+msgid "Log Level"
+msgstr "日志级别"
+
+msgid "Logs go to the system log (Status > System Log) when a level is chosen."
+msgstr "选择级别后，日志写入系统日志（状态 > 系统日志）。"
+
+msgid "Off"
+msgstr "关闭"
+
+msgid "DNS Server"
+msgstr "DNS 服务器"
+
+msgid "e.g. 8.8.8.8"
+msgstr "例如: 8.8.8.8"
+
+msgid "Extra Arguments"
+msgstr "额外参数"
+
+msgid "Additional NPC arguments in shell syntax, line breaks allowed; quote values containing & ? | ; e.g. -pipes=multi"
+msgstr "额外的 NPC 参数，按 shell 语法书写，可换行；含 & ? | ; 的值要加引号，例如 -pipes=multi"
+
+msgid "Config File"
+msgstr "配置文件"
+
+msgid "Optional INI config file path (-config), for setups without connections."
+msgstr "可选的 INI 配置文件路径（-config），用于不配置连接的情况。"
+
+msgid "Update NPC"
+msgstr "更新 NPC"
+
+msgid "Update NPC to the latest release and restart it"
+msgstr "更新 NPC 到最新版本并重启"
+
+msgid "Install NPC"
+msgstr "安装 NPC"
+
+msgid "Install or reinstall NPC with the install script"
+msgstr "用安装脚本安装或重装 NPC"
+
+msgid "Project"
+msgstr "项目主页"
+
+msgid "Connections"
+msgstr "连接"
+
+msgid "Each connection is one server profile of the NPS web page \"Launch command\"; all run in the same NPC process. Add one with Quick Import, or add a name here and paste its launch link."
+msgstr "每条连接对应 NPS 网页“启动命令”中的一个服务端配置，全部在同一个 NPC 进程中运行。可用快速导入添加，或在下方填名称后添加并粘贴启动链接。"
+
+msgid "Server"
+msgstr "服务端"
+
+msgid "(not an npc:// link)"
+msgstr "（不是 npc:// 链接）"
+
+msgid "Carrier"
+msgstr "连接方式"
+
+msgid "Local Access"
+msgstr "本地访问"
+
+msgid "Point-to-point access listeners on this router (-L), from the same NPS web page."
+msgstr "在本路由器上监听的点对点访问（-L），同样从 NPS 网页复制。"
+
+msgid "Listen"
+msgstr "监听"
+
+msgid "Target"
+msgstr "目标"
+
+msgid "Access Link"
+msgstr "访问链接"
+
+msgid "Copy \"Local access (-L)\" from the NPS web page \"Launch command\", e.g. tcp://0.0.0.0:2000?access=KEY&target=192.168.1.10:22&via=home"
+msgstr "从 NPS 网页“启动命令”复制“本地访问（-L）”，例如 tcp://0.0.0.0:2000?access=KEY&target=192.168.1.10:22&via=home"
+
+msgid "Access link must start with a type such as tcp://"
+msgstr "访问链接必须以类型开头，例如 tcp://"
+
+msgid "Connection"
+msgstr "连接"
+
+msgid "Launch Link"
+msgstr "启动链接"
+
+msgid "Copy \"Launch link\" from the NPS web page \"Launch command\". Also accepted: @/path/to/file, an http(s) URL or base64. Line breaks and spaces are removed on save."
+msgstr "从 NPS 网页“启动命令”复制“启动链接”。也可填 @/文件路径、http(s) 网址或 base64。保存时会去掉换行和空格。"
+
+msgid "Launch link is empty"
+msgstr "启动链接不能为空"
+
+msgid "Not installed"
+msgstr "未安装"
+
+msgid "Install it on the Install and Update tab."
+msgstr "请在“安装与更新”标签页安装。"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Not running"
+msgstr "未运行"
+
+msgid "exit code"
+msgstr "退出码"
+
+msgid "choose a Log Level on the Advanced Settings tab to see the reason in the System Log"
+msgstr "在“高级设置”中选择日志等级后，可在系统日志中查看原因"
+
+msgid "Collecting data..."
+msgstr "正在收集数据..."
+
+msgid "Running command (keys hidden)"
+msgstr "当前运行命令（已隐藏密钥）"

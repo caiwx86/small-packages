@@ -1,0 +1,24 @@
+{
+  "luci-app-netdata": {
+    "description": "Grant UCI and service control access for netdata",
+    "read": {
+      "file": {
+        "/etc/netdata/netdata.conf": [ "read" ],
+        "/usr/libexec/luci-app-netdata/netdata-ctl": [ "exec" ]
+      },
+      "ubus": {
+        "file": [ "read", "exec" ]
+      },
+      "uci": [ "netdata" ]
+    },
+    "write": {
+      "file": {
+        "/etc/netdata/netdata.conf": [ "write" ]
+      },
+      "ubus": {
+        "file": [ "write" ]
+      },
+      "uci": [ "netdata" ]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+#!/bin/sh
+
+# Re-apply the iptables redirect after fw3 reloads.  nftables (fw4) keeps its
+# own table across firewall reloads, so this script is a no-op there.
+[ "$(uci -q get AdGuardHome.AdGuardHome.enabled)" = "1" ] || exit 0
+[ "$(uci -q get AdGuardHome.AdGuardHome.redirect)" = "redirect" ] || exit 0
+
+/etc/init.d/AdGuardHome do_redirect 1
+exit 0

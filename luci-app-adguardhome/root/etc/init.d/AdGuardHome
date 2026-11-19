@@ -1,0 +1,1045 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+
+START=95
+STOP=01
+
+CONFIGURATION=AdGuardHome
+CRON_FILE=/etc/crontabs/root
+
+extra_command "do_redirect" "0 or 1"
+extra_command "testbackup" "backup or restore"
+extra_command "test_crontab"
+extra_command "force_reload"
+extra_command "isrunning"
+extra_command "repair" "detect and repair common service issues"
+
+set_forward_dnsmasq()
+{
+	local PORT="$1"
+	local addr="127.0.0.1#$PORT"
+	local OLD_SERVER server found=0
+
+	OLD_SERVER="$(uci -q get dhcp.@dnsmasq[0].server)"
+	for server in $OLD_SERVER; do
+		[ "$server" = "$addr" ] && found=1
+	done
+	[ "$found" = "1" ] && return 0
+
+	# Rebuild the upstream list, keeping the servers the user configured.
+	uci -q delete dhcp.@dnsmasq[0].server
+	for server in $OLD_SERVER; do
+		[ "$server" = "$addr" ] && continue
+		uci -q add_list dhcp.@dnsmasq[0].server="$server"
+	done
+	uci -q add_list dhcp.@dnsmasq[0].server="$addr"
+	uci -q delete dhcp.@dnsmasq[0].resolvfile
+	uci -q set dhcp.@dnsmasq[0].noresolv=1
+	uci -q commit dhcp
+	/etc/init.d/dnsmasq restart
+}
+
+stop_forward_dnsmasq()
+{
+	local OLD_PORT="$1"
+	local addr="127.0.0.1#$OLD_PORT"
+	local OLD_SERVER server found=0
+
+	OLD_SERVER="$(uci -q get dhcp.@dnsmasq[0].server)"
+	for server in $OLD_SERVER; do
+		[ "$server" = "$addr" ] && found=1
+	done
+	[ "$found" = "0" ] && return 0
+
+	uci -q del_list dhcp.@dnsmasq[0].server="$addr"
+	local addrlist="$(uci -q get dhcp.@dnsmasq[0].server)"
+	if [ -z "$addrlist" ]; then
+		uci -q set dhcp.@dnsmasq[0].resolvfile=/tmp/resolv.conf.d/resolv.conf.auto
+		uci -q delete dhcp.@dnsmasq[0].noresolv
+	fi
+	uci -q commit dhcp
+	/etc/init.d/dnsmasq restart
+}
+
+# Redirect rules are installed either with nftables (fw4, the default on
+# OpenWrt 22.03+) or with the legacy iptables NAT table (fw3).  The nftables
+# rules match "fib daddr type local", so interface address changes and IPv6
+# are handled without enumerating addresses.
+NFT_TABLE="adguardhome"
+
+use_nft_backend()
+{
+	# fw4 is nftables based; on fw3 systems prefer iptables even when the nft
+	# binary happens to be installed.
+	if command -v fw4 >/dev/null 2>&1 && command -v nft >/dev/null 2>&1; then
+		return 0
+	fi
+	command -v iptables >/dev/null 2>&1 && return 1
+	command -v nft >/dev/null 2>&1
+}
+
+set_nft_rules()
+{
+	local port="$1"
+
+	case "$port" in
+	''|*[!0-9]*)
+		logger -t AdGuardHome "invalid DNS port '$port'"
+		return 1
+		;;
+	esac
+
+	command -v nft >/dev/null 2>&1 || return 1
+
+	# Optional: do not intercept DNS arriving from the WAN side.
+	local wans wan wan_line="" quoted=""
+	wans="$(uci -q get AdGuardHome.AdGuardHome.wan_ifname 2>/dev/null)"
+	if [ -n "$wans" ]; then
+		for wan in $wans; do
+			quoted="$quoted\"$wan\", "
+		done
+		quoted="${quoted%, }"
+		wan_line="iifname { $quoted } return"
+	fi
+
+	nft delete table inet "$NFT_TABLE" 2>/dev/null
+
+	{
+		printf 'table inet %s {\n' "$NFT_TABLE"
+		printf '\tchain prerouting {\n'
+		printf '\t\ttype nat hook prerouting priority dstnat; policy accept;\n'
+		[ -n "$wan_line" ] && printf '\t\t%s\n' "$wan_line"
+		printf '\t\tfib daddr type local udp dport 53 redirect to :%s\n' "$port"
+		printf '\t\tfib daddr type local tcp dport 53 redirect to :%s\n' "$port"
+		printf '\t}\n'
+		printf '}\n'
+	} | nft -f - 2>/dev/null || {
+		logger -t AdGuardHome "failed to install nftables redirect rules"
+		return 1
+	}
+}
+
+clear_nft_rules()
+{
+	command -v nft >/dev/null 2>&1 || return 0
+	nft delete table inet "$NFT_TABLE" 2>/dev/null
+	return 0
+}
+
+set_legacy_rules()
+{
+	local port="$1" ipv6_server="$2"
+	local rc=0 IP IPS
+
+	command -v iptables >/dev/null 2>&1 || {
+		logger -t AdGuardHome "iptables is not available"
+		return 1
+	}
+
+	# fw3 flushes the NAT table on every firewall reload, so re-apply the
+	# rules through a firewall include script.
+	if [ "$(uci -q get firewall.AdGuardHome.type)" != "script" ] ||
+		[ "$(uci -q get firewall.AdGuardHome.path)" != "/usr/share/AdGuardHome/firewall.start" ] ||
+		[ "$(uci -q get firewall.AdGuardHome.reload)" != "1" ]; then
+		uci -q batch <<-EOF >/dev/null 2>&1
+		delete firewall.AdGuardHome
+		set firewall.AdGuardHome=include
+		set firewall.AdGuardHome.type=script
+		set firewall.AdGuardHome.path=/usr/share/AdGuardHome/firewall.start
+		set firewall.AdGuardHome.reload=1
+		commit firewall
+		EOF
+	fi
+
+	IPS="$(ip -4 addr show 2>/dev/null | awk '/inet /{print $2}' | cut -d'/' -f1 | grep -v '^127\.')"
+	for IP in $IPS; do
+		iptables -t nat -C PREROUTING -p udp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 ||
+			iptables -t nat -I PREROUTING -p udp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 || rc=1
+		iptables -t nat -C PREROUTING -p tcp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 ||
+			iptables -t nat -I PREROUTING -p tcp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 || rc=1
+	done
+
+	if [ "$ipv6_server" != "0" ] && command -v ip6tables >/dev/null 2>&1; then
+		IPS="$(ip -6 addr show 2>/dev/null | awk '/inet6 /{print $2}' | cut -d'/' -f1 | grep -v '^fe80:' | grep -v '^::1$')"
+		for IP in $IPS; do
+			# IPv6 NAT may be unavailable on some kernels; do not fail the
+			# IPv4 redirect because of it.
+			ip6tables -t nat -C PREROUTING -p udp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 ||
+				ip6tables -t nat -I PREROUTING -p udp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 ||
+				logger -t AdGuardHome "failed to install IPv6 iptables redirect rule"
+			ip6tables -t nat -C PREROUTING -p tcp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 ||
+				ip6tables -t nat -I PREROUTING -p tcp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 ||
+				logger -t AdGuardHome "failed to install IPv6 iptables redirect rule"
+		done
+	fi
+
+	# Exclude DNS arriving from the WAN side (return before the redirect).
+	local wans wan proto
+	wans="$(uci -q get AdGuardHome.AdGuardHome.wan_ifname 2>/dev/null)"
+	for wan in $wans; do
+		for proto in udp tcp; do
+			iptables -t nat -C PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 ||
+				iptables -t nat -I PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 ||
+				logger -t AdGuardHome "failed to install WAN return rule for $wan"
+			if command -v ip6tables >/dev/null 2>&1; then
+				ip6tables -t nat -C PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 ||
+					ip6tables -t nat -I PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 ||
+					true
+			fi
+		done
+	done
+
+	[ "$rc" = "0" ] || logger -t AdGuardHome "failed to install some iptables redirect rules"
+	return $rc
+}
+
+clear_legacy_rules()
+{
+	local port="$1" ipv6_server="$2"
+	local IP IPS wans wan proto
+
+	# Remove the WAN return rules first (independent of the DNS port).
+	if command -v iptables >/dev/null 2>&1; then
+		wans="$(uci -q get AdGuardHome.AdGuardHome.wan_ifname 2>/dev/null)"
+		for wan in $wans; do
+			for proto in udp tcp; do
+				while iptables -t nat -C PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1; do
+					iptables -t nat -D PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 || break
+				done
+				if command -v ip6tables >/dev/null 2>&1; then
+					while ip6tables -t nat -C PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1; do
+						ip6tables -t nat -D PREROUTING -i "$wan" -p "$proto" --dport 53 -j RETURN >/dev/null 2>&1 || break
+					done
+				fi
+			done
+		done
+	fi
+
+	if command -v iptables >/dev/null 2>&1 && [ -n "$port" ] && [ "$port" != "0" ]; then
+		IPS="$(ip -4 addr show 2>/dev/null | awk '/inet /{print $2}' | cut -d'/' -f1 | grep -v '^127\.')"
+		for IP in $IPS; do
+			while iptables -t nat -C PREROUTING -p udp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1; do
+				iptables -t nat -D PREROUTING -p udp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 || break
+			done
+			while iptables -t nat -C PREROUTING -p tcp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1; do
+				iptables -t nat -D PREROUTING -p tcp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 || break
+			done
+		done
+	fi
+
+	if command -v ip6tables >/dev/null 2>&1 && [ -n "$port" ] && [ "$port" != "0" ] && [ "$ipv6_server" != "0" ]; then
+		IPS="$(ip -6 addr show 2>/dev/null | awk '/inet6 /{print $2}' | cut -d'/' -f1 | grep -v '^fe80:' | grep -v '^::1$')"
+		for IP in $IPS; do
+			while ip6tables -t nat -C PREROUTING -p udp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1; do
+				ip6tables -t nat -D PREROUTING -p udp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 || break
+			done
+			while ip6tables -t nat -C PREROUTING -p tcp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1; do
+				ip6tables -t nat -D PREROUTING -p tcp -d "$IP" --dport 53 -j REDIRECT --to-ports "$port" >/dev/null 2>&1 || break
+			done
+		done
+	fi
+}
+
+set_redirect_rules()
+{
+	local port="$1" ipv6_server="$2"
+
+	if use_nft_backend; then
+		set_nft_rules "$port"
+	else
+		set_legacy_rules "$port" "$ipv6_server"
+	fi
+}
+
+clear_redirect_rules()
+{
+	local port="$1" ipv6_server="$2"
+
+	clear_nft_rules
+	clear_legacy_rules "$port" "$ipv6_server"
+
+	# fw4 does not need the legacy firewall include; drop one left behind by
+	# an earlier fw3 installation.
+	if use_nft_backend && uci -q get firewall.AdGuardHome >/dev/null 2>&1; then
+		uci -q delete firewall.AdGuardHome
+		uci -q commit firewall
+	fi
+}
+
+service_triggers() {
+	# nftables rules live in their own table and survive fw4 reloads; on fw3
+	# the firewall include script re-applies the iptables rules.  Therefore a
+	# firewall reload does not need to restart AdGuard Home.
+	procd_add_reload_trigger "$CONFIGURATION"
+}
+
+isrunning(){
+	config_load "${CONFIGURATION}"
+	_isrunning
+	local r=$?
+	if [ "$r" = "0" ]; then
+		echo "running"
+	elif [ "$r" = "1" ]; then
+		echo "not run"
+	else
+		echo "no bin"
+	fi
+	return $r
+}
+
+_isrunning(){
+	config_get binpath $CONFIGURATION binpath "/usr/bin/AdGuardHome"
+	[ ! -f "$binpath" ] && return 2
+	# 用进程名匹配，避免 pgrep -f 自匹配
+	pgrep "${binpath##*/}" >/dev/null 2>&1 && return 0
+	return 1
+}
+
+managed_pids()
+{
+	local data
+	command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1 || return 1
+	data="$(ubus call service list '{"name":"AdGuardHome"}' 2>/dev/null)" || return 1
+	printf '%s' "$data" | jsonfilter -e '@.AdGuardHome.instances.*.pid' 2>/dev/null | tr '\n' ' '
+}
+
+repair_service()
+{
+	local enabled binpath configpath redirect
+	local managed binname pid changed=0
+
+	config_load "$CONFIGURATION"
+	config_get_bool enabled $CONFIGURATION enabled 0
+	config_get binpath $CONFIGURATION binpath "/usr/bin/AdGuardHome"
+	config_get configpath $CONFIGURATION configpath "/etc/AdGuardHome.yaml"
+	config_get redirect $CONFIGURATION redirect "none"
+	binname="${binpath##*/}"
+
+	# Throttle *automatic* repairs only: the UI retries after a failed toggle
+	# and repeated start/stop cycles make a slow start worse.  A manual repair
+	# (button or command line) is always executed.
+	if [ "$1" = "auto" ]; then
+		local now last
+		now="$(date +%s 2>/dev/null)"
+		last="$(cat /var/run/AdGlastrepair 2>/dev/null)"
+		case "$now" in ''|*[!0-9]*) now=0 ;; esac
+		case "$last" in ''|*[!0-9]*) last=0 ;; esac
+		if [ "$now" -gt 0 ] && [ "$last" -gt 0 ] && [ $((now - last)) -lt 30 ]; then
+			echo "repair skipped (cooldown)"
+			return 0
+		fi
+		[ "$now" -gt 0 ] && echo "$now" > /var/run/AdGlastrepair
+	fi
+
+	# A stale stop flag prevents start_service from working.
+	if [ "$enabled" = "1" ] && [ -f /var/run/AdGserverdis ]; then
+		rm -f /var/run/AdGserverdis
+		echo "cleared stale stop flag"
+		changed=1
+	fi
+	rm -f /var/run/AdGlucitest 2>/dev/null
+
+	# AdGuard Home refuses to start without a usable configuration.
+	if [ ! -s "$configpath" ] && [ -s /usr/share/AdGuardHome/AdGuardHome_template.yaml ]; then
+		cp -f /usr/share/AdGuardHome/AdGuardHome_template.yaml "$configpath"
+		echo "restored missing configuration: $configpath"
+		changed=1
+	fi
+
+	# Report processes that are not supervised by procd, but do not kill them
+	# automatically.  On a busy router the current instance may not be visible
+	# through ubus yet, and killing a legitimate process leads to a restart
+	# storm (and keeps the web UI busy while nginx is already struggling).
+	local unmanaged=""
+	if managed="$(managed_pids)"; then
+		managed=" $managed "
+		for pid in $(pgrep "$binname" 2>/dev/null); do
+			case "$managed" in
+			*" $pid "*) ;;
+			*) unmanaged="$unmanaged $pid" ;;
+			esac
+		done
+	fi
+	if [ -n "$unmanaged" ]; then
+		echo "unmanaged AdGuardHome process(es):$unmanaged (left untouched)"
+		logger -t AdGuardHome "repair: unmanaged process(es):$unmanaged"
+	fi
+
+	# Killing is only done when the administrator explicitly asks for it
+	# with 'repair force'; automatic repairs must never fight procd.
+	if [ "$1" = "force" ] && [ -n "$unmanaged" ]; then
+		for pid in $unmanaged; do
+			logger -t AdGuardHome "repair: force-killing process $pid"
+			kill -TERM "$pid" 2>/dev/null
+		done
+		sleep 1
+		for pid in $unmanaged; do
+			kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+		done
+		echo "force-stopped unmanaged process(es):$unmanaged"
+		changed=1
+	fi
+
+	if [ "$enabled" = "1" ]; then
+		if [ ! -x "$binpath" ]; then
+			echo "binary is missing: $binpath"
+			return 1
+		fi
+		if _isrunning; then
+			echo "service is running"
+		else
+			echo "starting service"
+			start
+			changed=1
+		fi
+		if [ "$redirect" != "none" ] && _isrunning; then
+			_do_redirect 1
+		fi
+	else
+		if _isrunning; then
+			echo "service is disabled but running; stopping it"
+			stop
+			changed=1
+		fi
+	fi
+
+	[ "$changed" = "1" ] && echo "repair finished" || echo "nothing to repair"
+	return 0
+}
+
+force_reload(){
+	config_load "${CONFIGURATION}"
+	if _isrunning; then
+		procd_send_signal "$CONFIGURATION"
+	else
+		start
+	fi
+}
+
+get_tz()
+{
+	SET_TZ=""
+
+	[ -e "/etc/localtime" ] && return
+
+	for tzfile in /etc/TZ /var/etc/TZ; do
+		[ ! -e "$tzfile" ] && continue
+		tz="$(cat "$tzfile" 2>/dev/null)"
+	done
+
+	[ -z "$tz" ] && return
+	SET_TZ="$tz"
+}
+
+rm_port53()
+{
+	local AdGuardHome_PORT
+	AdGuardHome_PORT="$(config_editor "dns.port" "" "$configpath" "1")"
+	local dnsmasq_port="$(uci get dhcp.@dnsmasq[0].port 2>/dev/null)"
+	[ -z "$dnsmasq_port" ] && dnsmasq_port="53"
+
+	if [ "$dnsmasq_port" = "$AdGuardHome_PORT" ]; then
+		[ "$dnsmasq_port" = "53" ] && dnsmasq_port="1745"
+	elif [ "$dnsmasq_port" = "53" ]; then
+		return
+	fi
+
+	config_editor "dns.port" "$dnsmasq_port" "$configpath"
+	uci set dhcp.@dnsmasq[0].port="53"
+	uci commit dhcp
+
+	config_get binpath $CONFIGURATION binpath "/usr/bin/AdGuardHome"
+	local binname="${binpath##*/}"
+	local pids pid tries=0
+	pids="$(pgrep "$binname" 2>/dev/null)"
+	for pid in $pids; do kill -TERM "$pid" 2>/dev/null; done
+	while [ -n "$pids" ] && [ "$tries" -lt 10 ]; do
+		sleep 1
+		tries=$((tries + 1))
+		pids="$(pgrep "$binname" 2>/dev/null)"
+	done
+	for pid in $pids; do kill -KILL "$pid" 2>/dev/null; done
+	/etc/init.d/dnsmasq restart
+}
+
+use_port53()
+{
+	local AdGuardHome_PORT
+	AdGuardHome_PORT="$(config_editor "dns.port" "" "$configpath" "1")"
+	local dnsmasq_port="$(uci get dhcp.@dnsmasq[0].port 2>/dev/null)"
+	[ -z "$dnsmasq_port" ] && dnsmasq_port="53"
+	# AGH 端口未配置或无法读取时，使用默认 1745 作为 dnsmasq 的新端口
+	[ -z "$AdGuardHome_PORT" ] && AdGuardHome_PORT="1745"
+
+	if [ "$dnsmasq_port" = "$AdGuardHome_PORT" ]; then
+		[ "$dnsmasq_port" = "53" ] && AdGuardHome_PORT="1745"
+	elif [ "$AdGuardHome_PORT" = "53" ]; then
+		return
+	fi
+
+	config_editor "dns.port" "53" "$configpath"
+	uci set dhcp.@dnsmasq[0].port="$AdGuardHome_PORT"
+	uci commit dhcp
+	/etc/init.d/dnsmasq reload
+}
+
+do_redirect()
+{
+	config_load "${CONFIGURATION}"
+	_do_redirect "$1"
+}
+
+_do_redirect()
+{
+	local section="$CONFIGURATION"
+	local ipv6_server=1
+	local enabled="$1"
+	local rc=0
+
+	# Only report a working redirect after the rules were installed.
+	echo -n "0" > /var/run/AdGredir
+
+	config_get configpath $CONFIGURATION configpath "/etc/AdGuardHome.yaml"
+	if [ ! -s "$configpath" ]; then
+		cp -f /usr/share/AdGuardHome/AdGuardHome_template.yaml "$configpath" 2>/dev/null
+	fi
+
+	AdGuardHome_PORT="$(config_editor "dns.port" "" "$configpath" "1")"
+	[ -z "$AdGuardHome_PORT" ] && AdGuardHome_PORT="0"
+
+	config_get redirect "$section" redirect "none"
+	config_get old_redirect "$section" old_redirect "none"
+	config_get old_port "$section" old_port "0"
+	config_get old_enabled "$section" old_enabled "0"
+
+	uci -q get dhcp.@dnsmasq[0].port >/dev/null 2>&1 || uci -q set dhcp.@dnsmasq[0].port="53"
+
+	if [ "$old_enabled" = "1" ] && [ "$old_redirect" = "exchange" ]; then
+		AdGuardHome_PORT="$(uci -q get dhcp.@dnsmasq[0].port)"
+	fi
+
+	if [ "$old_redirect" != "$redirect" ] || [ "$old_port" != "$AdGuardHome_PORT" ] || { [ "$old_enabled" = "1" ] && [ "$enabled" = "0" ]; }; then
+		if [ "$old_redirect" != "none" ]; then
+			if [ "$old_redirect" = "redirect" ] && [ "$old_port" != "0" ]; then
+				clear_redirect_rules "$old_port" "$ipv6_server"
+			elif [ "$old_redirect" = "dnsmasq-upstream" ]; then
+				stop_forward_dnsmasq "$old_port"
+			elif [ "$old_redirect" = "exchange" ]; then
+				rm_port53
+			fi
+		fi
+	elif [ "$old_enabled" = "1" ] && [ "$enabled" = "1" ]; then
+		if [ "$old_redirect" = "redirect" ] && [ "$old_port" != "0" ]; then
+			clear_redirect_rules "$old_port" "$ipv6_server"
+		fi
+	fi
+
+	# Only touch the UCI state when it really changes; otherwise every firewall
+	# reload rewrites the configuration and restarts the service.
+	if [ "$old_redirect" != "$redirect" ] || [ "$old_port" != "$AdGuardHome_PORT" ] || [ "$old_enabled" != "$enabled" ]; then
+		uci -q delete AdGuardHome.@AdGuardHome[0].old_redirect
+		uci -q delete AdGuardHome.@AdGuardHome[0].old_port
+		uci -q delete AdGuardHome.@AdGuardHome[0].old_enabled
+		uci -q add_list AdGuardHome.@AdGuardHome[0].old_redirect="$redirect"
+		uci -q add_list AdGuardHome.@AdGuardHome[0].old_port="$AdGuardHome_PORT"
+		uci -q add_list AdGuardHome.@AdGuardHome[0].old_enabled="$enabled"
+		uci -q commit AdGuardHome
+	fi
+
+	[ "$enabled" = "0" ] && return 1
+	[ "$AdGuardHome_PORT" = "0" ] && return 1
+
+	case "$redirect" in
+	redirect)
+		set_redirect_rules "$AdGuardHome_PORT" "$ipv6_server" || rc=1
+		;;
+	dnsmasq-upstream)
+		set_forward_dnsmasq "$AdGuardHome_PORT" || rc=1
+		;;
+	exchange)
+		if [ "$(uci -q get dhcp.@dnsmasq[0].port)" = "53" ]; then
+			use_port53 || rc=1
+		fi
+		;;
+	esac
+
+	if [ "$rc" = "0" ] && [ "$redirect" != "none" ]; then
+		echo -n "1" > /var/run/AdGredir
+	fi
+	return $rc
+}
+
+get_filesystem()
+{
+	local path="$1"
+	local mntpt=""
+	local fstype=""
+
+	while IFS= read -r line; do
+		case "$line" in
+		/dev/root|/dev/ubi0*|/dev/mtdblock*)
+			continue
+			;;
+		esac
+		local mp="$(echo "$line" | awk '{print $2}')"
+		local fs="$(echo "$line" | awk '{print $3}')"
+		case "$path" in
+		"$mp"*)
+			fstype="$fs"
+			mntpt="$mp"
+			break
+			;;
+		esac
+	done < /proc/mounts
+
+	if [ -z "$mntpt" ]; then
+		mntpt="/"
+		fstype="$(awk '$2=="/" {print $3}' /proc/mounts)"
+	fi
+
+	echo "$fstype"
+}
+
+config_editor()
+{
+	local yaml="$1"
+	local value="$2"
+	local file="$3"
+	local ro="$4"
+
+	if [ "$ro" = "1" ]; then
+		awk -v yaml="$yaml" '
+		BEGIN {
+			split(yaml, part, "\\.")
+			i = 1
+			l = length(part)
+			s = ""
+		}
+		{
+			if (match($0, s "" part[i] ":")) {
+				if (i == l) {
+					sub(/^[^:]+: */, "")
+					print
+					exit
+				}
+				s = s "[- ]{2}"
+				i++
+			}
+		}' "$file"
+	else
+		# 安全写入：用 sed 只改匹配行，不改其他内容
+		# yaml 路径如 "dns.port" → 匹配带缩进的 "port:" 行
+		local last_key
+		last_key="${yaml##*.}"
+		if grep -qE "^[[:space:]]*${last_key}:" "$file" 2>/dev/null; then
+			sed -i "s|^\\([[:space:]]*${last_key}:\\).*|\\1 ${value}|" "$file"
+		else
+			echo "${last_key}: ${value}" >> "$file"
+		fi
+	fi
+}
+
+boot_service() {
+	rm -f /var/run/AdGserverdis >/dev/null 2>&1
+	config_load "${CONFIGURATION}"
+	config_get waitonboot $CONFIGURATION waitonboot "0"
+	config_get_bool enabled $CONFIGURATION enabled 0
+	config_get binpath $CONFIGURATION binpath "/usr/bin/AdGuardHome"
+
+	# start_service() also handles the missing-binary case by downloading the
+	# core in the background, so call it when the service is enabled.
+	if [ -f "$binpath" ] || [ "$enabled" = "1" ]; then
+		start_service
+	fi
+
+	if [ "$enabled" = "1" ] && [ "$waitonboot" = "1" ]; then
+		procd_open_instance
+		procd_set_param command "/usr/share/AdGuardHome/waitnet.sh"
+		procd_close_instance
+		echo "AdGuardHome: waiting for network..."
+	fi
+}
+
+testbackup(){
+	config_load "${CONFIGURATION}"
+	if [ "$1" = "backup" ]; then
+		backup
+	elif [ "$1" = "restore" ]; then
+		restore
+	fi
+}
+
+restore()
+{
+	config_get workdir $CONFIGURATION workdir "/etc/AdGuardHome"
+	config_get backupwdpath $CONFIGURATION backupwdpath "/etc/AdGuardHome"
+	[ -d "$backupwdpath/data" ] && cp -u -r -f "$backupwdpath/data" "$workdir/"
+}
+
+backup() {
+	config_get backupfile $CONFIGURATION backupfile ""
+	[ -z "$backupfile" ] && return 0
+
+	config_get backupwdpath $CONFIGURATION backupwdpath "/etc/AdGuardHome"
+	mkdir -p "$backupwdpath/data"
+	config_get workdir $CONFIGURATION workdir "/etc/AdGuardHome"
+
+	local retries=0
+	for one in $backupfile; do
+		while : ; do
+			local cpret
+			if [ -d "$backupwdpath/data/$one" ]; then
+				cpret="$(cp -u -r -f "$workdir/data/$one" "$backupwdpath/data" 2>&1)"
+			else
+				cpret="$(cp -u -r -f "$workdir/data/$one" "$backupwdpath/data/$one" 2>&1)"
+			fi
+			echo "$cpret"
+			echo "$cpret" | grep -q "no space left on device"
+			if [ $? -eq 0 ]; then
+				retries=$((retries + 1))
+				if [ "$retries" -ge 3 ]; then
+					echo "backup failed: no space left"
+					return 1
+				fi
+				echo "disk full, deleting querylog and retrying..."
+				del_querylog && continue
+				rm -rf "$backupwdpath/data/filters"
+				rm -rf "$workdir/data/filters" && continue
+				echo "backup failed"
+				return 1
+			fi
+			break
+		done
+	done
+}
+
+start_service() {
+	rm -f /var/run/AdGserverdis >/dev/null 2>&1
+	config_load "${CONFIGURATION}"
+
+	config_get hashpass $CONFIGURATION hashpass ""
+	config_get configpath $CONFIGURATION configpath "/etc/AdGuardHome.yaml"
+
+	# The password must not be written into a non-existent config file.
+	if [ ! -s "$configpath" ] && [ -s /usr/share/AdGuardHome/AdGuardHome_template.yaml ]; then
+		cp -f /usr/share/AdGuardHome/AdGuardHome_template.yaml "$configpath"
+	fi
+
+	if [ -n "$hashpass" ] && [ -s "$configpath" ]; then
+		config_editor "users.password" "$hashpass" "$configpath"
+		uci set "$CONFIGURATION"."$CONFIGURATION".hashpass=""
+		uci commit AdGuardHome
+	fi
+
+	local enabled
+	config_get_bool enabled $CONFIGURATION enabled 0
+
+	do_crontab
+
+	if [ "$enabled" = "0" ]; then
+		_do_redirect 0
+		local binpid
+		config_get binpath $CONFIGURATION binpath "/usr/bin/AdGuardHome"
+		# 用进程名匹配，避免 pgrep -f 自匹配
+		binpid=$(pgrep "${binpath##*/}" 2>/dev/null | head -1)
+		if [ -n "$binpid" ]; then
+			kill -TERM "$binpid" 2>/dev/null
+			sleep 1
+			kill -KILL "$binpid" 2>/dev/null
+		fi
+		return
+	fi
+
+	config_get workdir $CONFIGURATION workdir "/etc/AdGuardHome"
+	config_get backupfile $CONFIGURATION backupfile ""
+
+	# Restore has to run before the data directory is created, otherwise the
+	# "workdir/data is missing" check below can never be true.
+	mkdir -p "$workdir"
+	if [ -n "$backupfile" ] && [ ! -d "$workdir/data" ]; then
+		restore
+	fi
+	mkdir -p "$workdir/data"
+
+	local cwdfs
+	cwdfs="$(get_filesystem "$workdir")"
+	echo "AdGuardHome: workdir is on $cwdfs filesystem"
+	if [ "$cwdfs" = "jffs2" ]; then
+		logger -t AdGuardHome -p daemon.warn "jffs2 detected, redirecting db to tmp"
+		mkdir -p /tmp/adg_tmp
+		for db in stats.db sessions.db; do
+			touch "$workdir/data/$db"
+			[ ! -L "$workdir/data/$db" ] && mv -f "$workdir/data/$db" "/tmp/adg_tmp/$db" 2>/dev/null
+			[ ! -e "/tmp/adg_tmp/$db" ] && touch "/tmp/adg_tmp/$db"
+			[ -f "/tmp/adg_tmp/$db" ] && ln -sf "/tmp/adg_tmp/$db" "$workdir/data/$db"
+		done
+	fi
+
+	local ADDITIONAL_ARGS=""
+	config_get binpath $CONFIGURATION binpath "/usr/bin/AdGuardHome"
+	mkdir -p "${binpath%/*}"
+
+	ADDITIONAL_ARGS="-c $configpath -w $workdir"
+	config_get httpport $CONFIGURATION httpport 3000
+	ADDITIONAL_ARGS="$ADDITIONAL_ARGS -p $httpport"
+
+	config_get upprotect $CONFIGURATION upprotect ""
+	# The tools page only persists this option after it has been saved once.
+	# Keep the recommended files by default, otherwise a sysupgrade silently
+	# loses the core and /etc/AdGuardHome.yaml.
+	if ! uci -q get AdGuardHome.AdGuardHome.upprotect >/dev/null 2>&1; then
+		upprotect='$binpath $configpath $workdir/data/sessions.db $workdir/data/stats.db $workdir/data/filters'
+	fi
+	config_get logfile $CONFIGURATION logfile ""
+	mkdir -p /lib/upgrade/keep.d
+	{
+		for item in $upprotect; do
+			item="${item//\$binpath/$binpath}"
+			item="${item//\$configpath/$configpath}"
+			item="${item//\$workdir/$workdir}"
+			item="${item//\$logfile/$logfile}"
+			[ -n "$item" ] && echo "$item"
+		done
+	} > /lib/upgrade/keep.d/luci-app-adguardhome
+
+	[ -n "$logfile" ] && ADDITIONAL_ARGS="$ADDITIONAL_ARGS -l $logfile"
+
+	if [ ! -f "$binpath" ]; then
+		_do_redirect 0
+		/usr/share/AdGuardHome/update_core.sh >/tmp/AdGuardHome_update.log 2>&1 &
+		exit 0
+	fi
+
+	config_get_bool verbose $CONFIGURATION verbose 0
+	[ "$verbose" -eq 1 ] && ADDITIONAL_ARGS="$ADDITIONAL_ARGS -v"
+
+	config_get user $CONFIGURATION user ""
+	config_get group $CONFIGURATION group ""
+	config_get gc $CONFIGURATION gc "0"
+	config_get maxprocs $CONFIGURATION maxprocs "0"
+	config_get memlimit $CONFIGURATION memlimit "0"
+	config_get_bool jail $CONFIGURATION jail 0
+
+	procd_open_instance
+	get_tz
+	[ -n "$SET_TZ" ] && procd_set_param env TZ="$SET_TZ"
+	procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+	procd_set_param limits core="unlimited" nofile="65535 65535"
+	procd_set_param stderr 1
+	[ -n "$user" ] && procd_set_param user "$user"
+	[ -n "$group" ] && procd_set_param group "$group"
+	[ "$gc" != "0" ] && procd_set_param env GOGC="$gc"
+	[ "$maxprocs" != "0" ] && procd_set_param env GOMAXPROCS="$maxprocs"
+	[ -n "$memlimit" ] && [ "$memlimit" != "0" ] && procd_set_param env GOMEMLIMIT="${memlimit}MiB"
+
+	# The jail mount list only has an effect when the jail is enabled.
+	if [ "$jail" = "1" ]; then
+		procd_add_jail AdGuardHome log
+		local mp
+		for mp in /dev /etc/ssl /etc/hosts /etc/resolv.conf; do
+			procd_add_jail_mount "$mp"
+		done
+		procd_add_jail_mount "$configpath"
+		procd_add_jail_mount_rw "$workdir"
+		procd_add_jail_mount_rw /tmp
+
+		# DynamicList writes `list jail_mount '...'` entries.
+		config_list_foreach $CONFIGURATION jail_mount procd_add_jail_mount
+		config_list_foreach $CONFIGURATION jail_mount_rw procd_add_jail_mount_rw
+
+		# Backwards compatibility with the old newline-separated format.
+		local jm jmrw
+		jm="$(uci -q get AdGuardHome.AdGuardHome.jail_mount 2>/dev/null)"
+		case "$jm" in
+			*$'\n'*)
+				printf '%s\n' "$jm" | while IFS= read -r mp; do
+					[ -n "$mp" ] && procd_add_jail_mount "$mp"
+				done
+				;;
+		esac
+		jmrw="$(uci -q get AdGuardHome.AdGuardHome.jail_mount_rw 2>/dev/null)"
+		case "$jmrw" in
+			*$'\n'*)
+				printf '%s\n' "$jmrw" | while IFS= read -r mp; do
+					[ -n "$mp" ] && procd_add_jail_mount_rw "$mp"
+				done
+				;;
+		esac
+	fi
+
+	procd_set_param command $binpath $ADDITIONAL_ARGS
+	procd_set_param file "$configpath" "/etc/hosts" "/etc/config/AdGuardHome"
+	procd_close_instance
+
+	if [ -f "$configpath" ]; then
+		_do_redirect 1
+	else
+		_do_redirect 0
+		config_get redirect "$CONFIGURATION" redirect "none"
+		if [ "$redirect" != "none" ]; then
+			procd_open_instance
+			procd_set_param command "/usr/share/AdGuardHome/watchconfig.sh"
+			procd_close_instance
+			echo "AdGuardHome: no config found, watching for config file..."
+		fi
+	fi
+
+	echo "AdGuardHome service enabled (switch=$enabled)"
+
+	(sleep 30 && \
+		pgrep "${binpath##*/}" >/dev/null 2>&1 || { \
+			logger -t AdGuardHome "no process found after 30s, canceling redirect"; \
+			_do_redirect 0; \
+		}) &
+
+	local bypass_global="$(uci get bypass.@global[0].global_server 2>/dev/null)"
+	local bypass_adg="$(uci get bypass.@global[0].adguardhome 2>/dev/null)"
+	local dnsmasq_port="$(uci get dhcp.@dnsmasq[0].port 2>/dev/null)"
+	if [ -n "$bypass_global" ] && [ "$bypass_adg" = "1" ] && [ "$dnsmasq_port" = "53" ]; then
+		uci -q set AdGuardHome.AdGuardHome.redirect='exchange'
+		uci commit AdGuardHome
+		do_redirect 1
+	fi
+}
+
+reload_service()
+{
+	rm -f /var/run/AdGlucitest >/dev/null 2>&1
+	echo "AdGuardHome reloading"
+	start
+}
+
+del_querylog(){
+	local backupwdpath
+	config_get backupwdpath $CONFIGURATION backupwdpath "/etc/AdGuardHome"
+	local workdir
+	config_get workdir $CONFIGURATION workdir "/etc/AdGuardHome"
+
+	local btarget
+	btarget="$(ls "$backupwdpath/data" 2>/dev/null | grep "querylog.json" | sort -r | head -n1)"
+	local wtarget
+	wtarget="$(ls "$workdir/data" 2>/dev/null | grep "querylog.json" | sort -r | head -n1)"
+
+	if [ "$btarget" = "$wtarget" ]; then
+		[ -z "$btarget" ] && return 1
+		rm -f "$workdir/data/$wtarget"
+		rm -f "$backupwdpath/data/$btarget"
+		return 0
+	fi
+
+	if [ "$btarget" \> "$wtarget" ]; then
+		rm -f "$backupwdpath/data/$btarget"
+	else
+		rm -f "$workdir/data/$wtarget"
+	fi
+	return 0
+}
+
+stop_service()
+{
+	config_load "${CONFIGURATION}"
+	_do_redirect 0
+	do_crontab
+
+	if [ "$1" != "nobackup" ]; then
+		config_get backupfile $CONFIGURATION backupfile ""
+		[ -n "$backupfile" ] && backup
+	fi
+
+	echo "AdGuardHome service disabled"
+	touch /var/run/AdGserverdis
+
+	# Belt and braces: if procd cannot terminate a stuck daemon, kill it
+	# after a grace period so the DNS port is released.
+	local binname oldpids
+	config_get binpath $CONFIGURATION binpath "/usr/bin/AdGuardHome"
+	binname="${binpath##*/}"
+	oldpids="$(pgrep "$binname" 2>/dev/null)"
+	if [ -n "$binname" ] && [ -n "$oldpids" ]; then
+		(
+			sleep 8
+			[ -f /var/run/AdGserverdis ] || exit 0
+			# Do not kill anything if the service was re-enabled meanwhile.
+			[ "$(uci -q get AdGuardHome.AdGuardHome.enabled)" = "1" ] && exit 0
+			for pid in $oldpids; do
+				logger -t AdGuardHome "force-killing stuck process $pid"
+				kill -KILL "$pid" 2>/dev/null
+			done
+		) &
+	fi
+}
+
+boot() {
+	rc_procd boot_service "$@"
+	if eval "type service_started" 2>/dev/null >/dev/null; then
+		service_started
+	fi
+}
+
+test_crontab(){
+	config_load "${CONFIGURATION}"
+	do_crontab
+}
+
+do_crontab(){
+	config_get_bool enabled $CONFIGURATION enabled 0
+	config_get crontab $CONFIGURATION crontab ""
+	local cronreload=0
+
+	local findstr default cronenable
+	findstr="/usr/share/AdGuardHome/update_core.sh"
+	default="30 3 * * * /usr/share/AdGuardHome/update_core.sh"
+	[ "$enabled" = "0" ] || [ "${crontab//autoupdate/}" = "$crontab" ] && cronenable=0 || cronenable=1
+	crontab_editor
+
+	findstr="/usr/share/AdGuardHome/tailto.sh"
+	default="0 * * * * /usr/share/AdGuardHome/tailto.sh 2000 \$(uci get AdGuardHome.AdGuardHome.workdir)/data/querylog.json"
+	[ "$enabled" = "0" ] || [ "${crontab//cutquerylog/}" = "$crontab" ] && cronenable=0 || cronenable=1
+	crontab_editor
+
+	findstr="/usr/share/AdGuardHome/tailto.sh"
+	default="30 3 * * * /usr/share/AdGuardHome/tailto.sh 2000 \$(uci get AdGuardHome.AdGuardHome.logfile)"
+	[ "$enabled" = "0" ] || [ "${crontab//cutruntimelog/}" = "$crontab" ] && cronenable=0 || cronenable=1
+	crontab_editor
+
+	findstr="/usr/share/AdGuardHome/addhost.sh"
+	default="0 * * * * /usr/share/AdGuardHome/addhost.sh"
+	[ "$enabled" = "0" ] || [ "${crontab//autohost/}" = "$crontab" ] && cronenable=0 || cronenable=1
+	crontab_editor
+
+	[ "$cronreload" -gt 0 ] && /etc/init.d/cron restart
+}
+
+crontab_editor(){
+	local line
+	local reload
+	line="$(grep "$findstr" "$CRON_FILE" 2>/dev/null)"
+
+	if [ "${line#\#}" != "$line" ]; then
+		if [ "$cronenable" = "1" ]; then
+			sed -i "\|$findstr|d" "$CRON_FILE"
+			echo "${line#\#}" >> "$CRON_FILE"
+			cronreload=$((cronreload + 1))
+		elif [ -z "$reload" ]; then
+			sed -i "\|$findstr|d" "$CRON_FILE"
+			echo "$line" >> "$CRON_FILE"
+		fi
+	else
+		if [ "$cronenable" = "1" ]; then
+			if [ -z "$line" ]; then
+				line="$default"
+				reload=1
+			fi
+			if [ -n "$reload" ]; then
+				sed -i "\|$findstr|d" "$CRON_FILE"
+				echo "$line" >> "$CRON_FILE"
+				cronreload=$((cronreload + 1))
+			fi
+		elif [ -n "$line" ]; then
+			sed -i "\|$findstr|d" "$CRON_FILE"
+			echo "#$line" >> "$CRON_FILE"
+			cronreload=$((cronreload + 1))
+		fi
+	fi
+}

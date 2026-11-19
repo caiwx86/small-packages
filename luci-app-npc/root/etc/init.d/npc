@@ -1,0 +1,140 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+USE_PROCD=1
+LOGGER="logger -t [NPC]"
+
+npc_Path="$(command -v npc)"
+
+has_arg() {
+	# has_arg NAME ARGS...: true if -NAME / --NAME (with "_", "-" or "." spelled any way) is present
+	local name="$1" a n
+	shift
+	for a in "$@"; do
+		case "$a" in
+			-*) ;;
+			*) continue ;;
+		esac
+		n="${a#-}"
+		n="${n#-}"
+		n="${n%%=*}"
+		n="$(echo "$n" | tr '.-' '__')"
+		[ "$n" = "$name" ] && return 0
+	done
+	return 1
+}
+
+find_section() {
+	[ -z "$npc_section" ] && npc_section="$1"
+}
+
+count_connection() {
+	local enabled link
+	config_get_bool enabled "$1" enabled 1
+	config_get link "$1" link
+	[ "$enabled" = "1" ] && [ -n "$link" ] && conn_count=$((conn_count + 1))
+}
+
+append_connection() {
+	local enabled link
+	config_get_bool enabled "$1" enabled 1
+	config_get link "$1" link
+	[ "$enabled" = "1" ] && [ -n "$link" ] || return 0
+	case "$link" in
+		npc://*\#*) ;;
+		npc://*) link="$link#$1" ;;
+	esac
+	procd_append_param command "-launch=$link"
+}
+
+append_access() {
+	local enabled link
+	config_get_bool enabled "$1" enabled 1
+	config_get link "$1" link
+	[ "$enabled" = "1" ] && [ -n "$link" ] && procd_append_param command "-L=$link"
+}
+
+append_launch() {
+	[ -n "$1" ] && procd_append_param command "-launch=$1"
+}
+
+start_service() {
+	if [ -f /usr/local/bin/npc ] ; then
+		${LOGGER} "Moving npc to /usr/bin ..."
+		mv -f /usr/local/bin/npc /usr/bin/npc
+	fi
+	if [ -f /usr/local/bin/npc-update ] ; then
+		${LOGGER} "Moving npc-update to /usr/bin ..."
+		mv -f /usr/local/bin/npc-update /usr/bin/npc-update
+	fi
+
+	local npc_section="" conn_count=0
+	config_load npc
+	config_foreach find_section npc
+	[ -z "$npc_section" ] && return
+
+	local enable dns extra_args log_level config_file launches
+	config_get_bool enable "$npc_section" enable 0
+	config_get dns "$npc_section" dns
+	config_get log_level "$npc_section" log_level
+	config_get config_file "$npc_section" config_file
+	config_get extra_args "$npc_section" extra_args
+	config_get launches "$npc_section" launch
+
+	if [ "$enable" != "1" ]; then
+		${LOGGER} "NPS Client(NPC) is disabled"
+		return
+	fi
+
+	# Extra arguments are parsed like a shell command line, so quotes are stripped properly.
+	eval "set -- $extra_args" || {
+		${LOGGER} "Invalid extra arguments: $extra_args"
+		return 1
+	}
+
+	config_foreach count_connection connection
+	local has_launch=0
+	if [ "$conn_count" -gt 0 ] || [ -n "$launches" ] || [ -n "$config_file" ] || \
+		has_arg launch "$@" || has_arg config "$@" || has_arg c "$@"; then
+		has_launch=1
+	fi
+
+	if [ "$has_launch" = "0" ] && ! has_arg server "$@" && ! has_arg s "$@"; then
+		${LOGGER} "NPS Client(NPC) has no enabled connection or config file; not started"
+		return
+	fi
+
+	${LOGGER} "Starting NPS Client(NPC) ..."
+
+	procd_open_instance
+	procd_set_param command "$npc_Path"
+	config_foreach append_connection connection
+	config_list_foreach "$npc_section" launch append_launch
+	config_foreach append_access access
+	[ -n "$config_file" ] && procd_append_param command "-config=$config_file"
+
+
+	[ -n "$dns" ] && ! has_arg dns_server "$@" && procd_append_param command "-dns_server=$dns"
+	has_arg debug "$@" || procd_append_param command "-debug=false"
+	if [ -n "$log_level" ]; then
+		has_arg log "$@" || procd_append_param command "-log=stdout"
+		has_arg log_format "$@" || procd_append_param command "-log_format=text"
+		has_arg log_level "$@" || procd_append_param command "-log_level=$log_level"
+	else
+		has_arg log "$@" || procd_append_param command "-log=off"
+	fi
+	[ $# -gt 0 ] && procd_append_param command "$@"
+
+	procd_set_param respawn
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+stop_service() {
+	${LOGGER} "Stopping NPS Client(NPC) ..."
+}
+
+service_triggers() {
+	procd_add_reload_trigger "npc"
+}

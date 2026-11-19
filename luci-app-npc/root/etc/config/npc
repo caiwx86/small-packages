@@ -1,0 +1,5 @@
+
+config npc
+	option enable '0'
+	option log_level ''
+	option extra_args ''
