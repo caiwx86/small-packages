@@ -17,6 +17,10 @@ LUCI_DEPENDS:=+openssl-util +netdata-ssl
 
 LUCI_DESCRIPTION:=Real-time performance monitoring with optional native HTTPS
 
+PKG_NAME:=luci-app-netdata
+PKG_VERSION:=1.0
+PKG_RELEASE:=1
+
 PKG_MAINTAINER:=Anya Lin <hukk1996@gmail.com>
 PKG_LICENSE:=GPL-3.0
 

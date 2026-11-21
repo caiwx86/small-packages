@@ -432,56 +432,370 @@ get_tz()
 	SET_TZ="$tz"
 }
 
-rm_port53()
+# --- DNS port helpers ---------------------------------------------
+port_inodes()
 {
-	local AdGuardHome_PORT
-	AdGuardHome_PORT="$(config_editor "dns.port" "" "$configpath" "1")"
-	local dnsmasq_port="$(uci get dhcp.@dnsmasq[0].port 2>/dev/null)"
-	[ -z "$dnsmasq_port" ] && dnsmasq_port="53"
+	local port="$1"
+	awk -v p="$(printf '%04X' "$port")" '
+		FNR > 1 {
+			split($2, a, ":")
+			if (toupper(a[2]) == p && ($4 == "0A" || $4 == "07")) print $10
+		}' /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6 2>/dev/null | sort -u
+}
 
-	if [ "$dnsmasq_port" = "$AdGuardHome_PORT" ]; then
-		[ "$dnsmasq_port" = "53" ] && dnsmasq_port="1745"
-	elif [ "$dnsmasq_port" = "53" ]; then
-		return
+port_pids()
+{
+	local port="$1" inodes inode fd link pid found="" pids=""
+	inodes=" $(port_inodes "$port" | tr '\n' ' ') "
+	[ "$inodes" = "  " ] && return 0
+
+	# netstat is much faster than walking every /proc fd.
+	if command -v netstat >/dev/null 2>&1; then
+		pids="$(netstat -lnp 2>/dev/null | awk -v p=":$port" '$4 ~ p "$" {print $NF}' | sed 's#/.*##' | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ')"
+		if [ -n "$pids" ]; then
+			echo $pids
+			return 0
+		fi
 	fi
 
-	config_editor "dns.port" "$dnsmasq_port" "$configpath"
-	uci set dhcp.@dnsmasq[0].port="53"
-	uci commit dhcp
+	for fd in /proc/[0-9]*/fd/*; do
+		link="$(readlink "$fd" 2>/dev/null)" || continue
+		case "$link" in
+		socket:\[*\])
+			inode="${link#socket:[}"
+			inode="${inode%]}"
+			;;
+		*) continue ;;
+		esac
+		case "$inodes" in
+		*" $inode "*) ;;
+		*) continue ;;
+		esac
+		pid="${fd#/proc/}"
+		pid="${pid%%/*}"
+		case " $found " in
+		*" $pid "*) ;;
+		*) found="$found $pid" ;;
+		esac
+	done
+	echo $found
+}
 
-	config_get binpath $CONFIGURATION binpath "/usr/bin/AdGuardHome"
-	local binname="${binpath##*/}"
-	local pids pid tries=0
-	pids="$(pgrep "$binname" 2>/dev/null)"
-	for pid in $pids; do kill -TERM "$pid" 2>/dev/null; done
-	while [ -n "$pids" ] && [ "$tries" -lt 10 ]; do
+port_free()
+{
+	[ -z "$(port_inodes "$1")" ]
+}
+
+wait_port_free()
+{
+	local port="$1" timeout="$2" i=0
+	[ -z "$timeout" ] && timeout=10
+	while [ "$i" -lt "$timeout" ]; do
+		port_free "$port" && return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	port_free "$port"
+}
+
+wait_port_listen()
+{
+	local port="$1" timeout="$2" i=0
+	[ -z "$timeout" ] && timeout=20
+	while [ "$i" -lt "$timeout" ]; do
+		[ -n "$(port_inodes "$port")" ] && return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
+}
+
+find_free_port()
+{
+	local port="$1" i=0
+	[ -z "$port" ] && port=1745
+	while [ "$i" -lt 200 ] && [ "$port" -lt 65535 ]; do
+		if port_free "$port"; then
+			echo "$port"
+			return 0
+		fi
+		port=$((port + 1))
+		i=$((i + 1))
+	done
+	return 1
+}
+
+pid_name()
+{
+	cat "/proc/$1/comm" 2>/dev/null
+}
+
+dns_service_for()
+{
+	case "$1" in
+	dnsmasq|smartdns|unbound|stubby|https-dns-proxy|mosdns|dnsproxy|named|coredns)
+		echo "$1"
+		;;
+	*)
+		[ -x "/etc/init.d/$1" ] && echo "$1"
+		;;
+	esac
+}
+
+port_has_agh()
+{
+	local pid
+	[ -n "$binpath" ] || return 1
+	for pid in $(port_pids "$1"); do
+		[ "$(pid_name "$pid")" = "$(basename "$binpath")" ] && return 0
+	done
+	return 1
+}
+
+free_port_force()
+{
+	local port="$1" context="$2" binname pids pid name svc tries=0
+	[ -z "$binpath" ] && binpath="/usr/bin/AdGuardHome"
+	binname="$(basename "$binpath")"
+
+	pids="$(port_pids "$port")"
+	if [ -z "$pids" ]; then
+		[ -z "$(port_inodes "$port")" ] && return 0
+		logger -t AdGuardHome "$context: port $port has a listener but no visible PID"
+		return 1
+	fi
+
+	for pid in $pids; do
+		name="$(pid_name "$pid")"
+		[ -z "$name" ] && name="pid-$pid"
+		logger -t AdGuardHome "$context: port $port held by $name ($pid), stopping it"
+		if [ "$name" = "$binname" ] || [ "$name" = "AdGuardHome" ]; then
+			kill -TERM "$pid" 2>/dev/null
+		else
+			svc="$(dns_service_for "$name")"
+			if [ -n "$svc" ] && [ -x "/etc/init.d/$svc" ]; then
+				/etc/init.d/"$svc" stop 9>&- >/dev/null 2>&1
+			else
+				kill -TERM "$pid" 2>/dev/null
+			fi
+		fi
+	done
+
+	while [ "$tries" -lt 10 ]; do
+		port_free "$port" && return 0
 		sleep 1
 		tries=$((tries + 1))
-		pids="$(pgrep "$binname" 2>/dev/null)"
 	done
-	for pid in $pids; do kill -KILL "$pid" 2>/dev/null; done
-	/etc/init.d/dnsmasq restart
+
+	for pid in $(port_pids "$port"); do
+		name="$(pid_name "$pid")"
+		logger -t AdGuardHome "$context: force-killing $name ($pid) on port $port"
+		kill -KILL "$pid" 2>/dev/null
+	done
+	sleep 1
+	port_free "$port"
+}
+
+restart_dnsmasq_on()
+{
+	local port="$1" old_port="$2"
+	[ -n "$port" ] || return 1
+	[ -x /etc/init.d/dnsmasq ] || return 1
+	uci -q set dhcp.@dnsmasq[0].port="$port" || return 1
+	uci -q commit dhcp || return 1
+	# Do not let the daemon inherit the redirect lock fd.
+	/etc/init.d/dnsmasq restart 9>&- >/dev/null 2>&1
+	if [ -n "$old_port" ] && [ "$old_port" != "$port" ]; then
+		wait_port_free "$old_port" 10 || return 1
+	fi
+	wait_port_listen "$port" 15
+}
+
+wait_agh_on()
+{
+	local port="$1" timeout="$2" i=0
+	[ -z "$timeout" ] && timeout=25
+	while [ "$i" -lt "$timeout" ]; do
+		[ -n "$(port_inodes "$port")" ] && return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
+}
+
+dns_query_ok()
+{
+	local server="$1"
+	[ -z "$server" ] && server="127.0.0.1"
+	command -v nslookup >/dev/null 2>&1 || return 0
+	if command -v timeout >/dev/null 2>&1; then
+		timeout 6 nslookup example.com "$server" >/dev/null 2>&1
+	else
+		nslookup example.com "$server" >/dev/null 2>&1
+	fi
+}
+
+rollback_exchange()
+{
+	local old_agh="$1" new_dns="$2" binname pid
+	binname="$(basename "$binpath")"
+	logger -t AdGuardHome "exchange rollback: AGH to $old_agh, dnsmasq to 53"
+	config_editor "dns.port" "$old_agh" "$configpath"
+	for pid in $(port_pids 53); do
+		[ "$(pid_name "$pid")" = "$binname" ] && kill -TERM "$pid" 2>/dev/null
+	done
+	wait_port_free 53 10
+	free_port_force 53 "exchange-rollback"
+	restart_dnsmasq_on 53 "$new_dns"
+	wait_agh_on "$old_agh" 15
 }
 
 use_port53()
 {
-	local AdGuardHome_PORT
-	AdGuardHome_PORT="$(config_editor "dns.port" "" "$configpath" "1")"
-	local dnsmasq_port="$(uci get dhcp.@dnsmasq[0].port 2>/dev/null)"
-	[ -z "$dnsmasq_port" ] && dnsmasq_port="53"
-	# AGH 端口未配置或无法读取时，使用默认 1745 作为 dnsmasq 的新端口
-	[ -z "$AdGuardHome_PORT" ] && AdGuardHome_PORT="1745"
+	local old_agh old_dns new_dns
+	config_get configpath $CONFIGURATION configpath "/etc/AdGuardHome.yaml"
+	config_get binpath $CONFIGURATION binpath "/usr/bin/AdGuardHome"
 
-	if [ "$dnsmasq_port" = "$AdGuardHome_PORT" ]; then
-		[ "$dnsmasq_port" = "53" ] && AdGuardHome_PORT="1745"
-	elif [ "$AdGuardHome_PORT" = "53" ]; then
-		return
+	old_agh="$(config_editor "dns.port" "" "$configpath" "1")"
+	[ -z "$old_agh" ] && old_agh="5553"
+	old_dns="$(uci -q get dhcp.@dnsmasq[0].port)"
+	[ -z "$old_dns" ] && old_dns="53"
+
+	if [ "$old_agh" = "53" ]; then
+		new_dns=""
+		if [ "$old_dns" = "53" ]; then
+			new_dns="$(find_free_port 1745)" || return 1
+			free_port_force "$new_dns" "exchange" || return 1
+			restart_dnsmasq_on "$new_dns" 53 || return 1
+			ADG_NEW_PORT="$new_dns"
+		else
+			ADG_NEW_PORT="$old_dns"
+		fi
+
+		if ! port_has_agh 53; then
+			if ! port_free 53; then
+				if ! free_port_force 53 "exchange"; then
+					if [ -n "$new_dns" ]; then
+						restart_dnsmasq_on 53 "$new_dns"
+					fi
+					return 1
+				fi
+			fi
+			if ! wait_agh_on 53 15; then
+				logger -t AdGuardHome "exchange: AdGuardHome is not listening on 53"
+				if [ -n "$new_dns" ]; then
+					restart_dnsmasq_on 53 "$new_dns"
+				else
+					restart_dnsmasq_on 53 "$old_dns"
+				fi
+				return 1
+			fi
+		fi
+		return 0
 	fi
 
-	config_editor "dns.port" "53" "$configpath"
-	uci set dhcp.@dnsmasq[0].port="$AdGuardHome_PORT"
-	uci commit dhcp
-	/etc/init.d/dnsmasq reload
+	new_dns="$(find_free_port 1745)" || return 1
+	free_port_force "$new_dns" "exchange" || return 1
+	if ! restart_dnsmasq_on "$new_dns" 53; then
+		logger -t AdGuardHome "exchange: dnsmasq failed to move to $new_dns"
+		restart_dnsmasq_on 53 "$new_dns"
+		return 1
+	fi
+
+	if ! port_free 53; then
+		if port_has_agh 53; then
+			logger -t AdGuardHome "exchange: port 53 still held by AdGuardHome"
+		else
+			free_port_force 53 "exchange" || {
+				rollback_exchange "$old_agh" "$new_dns"
+				return 1
+			}
+		fi
+	fi
+
+	if ! config_editor "dns.port" "53" "$configpath"; then
+		rollback_exchange "$old_agh" "$new_dns"
+		return 1
+	fi
+	# If procd did not restart the daemon after the YAML change, nudge it.
+	sleep 2
+	if ! port_has_agh 53; then
+		for pid in $(pgrep "$(basename "$binpath")" 2>/dev/null); do
+			kill -TERM "$pid" 2>/dev/null
+		done
+	fi
+	if ! wait_agh_on 53 25; then
+		logger -t AdGuardHome "exchange: AdGuardHome did not bind port 53"
+		rollback_exchange "$old_agh" "$new_dns"
+		return 1
+	fi
+	if ! dns_query_ok; then
+		logger -t AdGuardHome "exchange: DNS check failed, rolling back"
+		rollback_exchange "$old_agh" "$new_dns"
+		return 1
+	fi
+
+	ADG_NEW_PORT="$new_dns"
+	return 0
+}
+
+rm_port53()
+{
+	local old_agh old_dns target_agh binname pid
+	config_get configpath $CONFIGURATION configpath "/etc/AdGuardHome.yaml"
+	config_get binpath $CONFIGURATION binpath "/usr/bin/AdGuardHome"
+	binname="$(basename "$binpath")"
+
+	old_agh="$(config_editor "dns.port" "" "$configpath" "1")"
+	[ -z "$old_agh" ] && old_agh="53"
+	old_dns="$(uci -q get dhcp.@dnsmasq[0].port)"
+	[ -z "$old_dns" ] && old_dns="1745"
+
+	if [ "$old_agh" != "53" ]; then
+		[ "$old_dns" = "53" ] || restart_dnsmasq_on 53 "$old_dns"
+		ADG_NEW_PORT="$old_agh"
+		return 0
+	fi
+
+	target_agh="$(find_free_port 5553)" || return 1
+	free_port_force "$target_agh" "switch-to-redirect" || return 1
+
+	if ! config_editor "dns.port" "$target_agh" "$configpath"; then
+		return 1
+	fi
+
+	if ! wait_port_free 53 15; then
+		for pid in $(port_pids 53); do
+			[ "$(pid_name "$pid")" = "$binname" ] && kill -TERM "$pid" 2>/dev/null
+		done
+		wait_port_free 53 10 || true
+	fi
+
+	if ! port_free 53; then
+		for pid in $(port_pids 53); do
+			[ "$(pid_name "$pid")" = "$binname" ] && kill -KILL "$pid" 2>/dev/null
+		done
+		wait_port_free 53 5 || true
+	fi
+	if ! port_free 53; then
+		free_port_force 53 "switch-to-redirect" || true
+	fi
+
+	if ! restart_dnsmasq_on 53 "$old_dns"; then
+		logger -t AdGuardHome "redirect: dnsmasq failed to bind port 53, restoring exchange"
+		config_editor "dns.port" "53" "$configpath"
+		restart_dnsmasq_on "$old_dns" 53
+		wait_agh_on 53 20
+		return 1
+	fi
+
+	ADG_NEW_PORT="$target_agh"
+	if ! wait_agh_on "$target_agh" 15; then
+		logger -t AdGuardHome "redirect: AdGuardHome is not listening on $target_agh"
+		return 1
+	fi
+	dns_query_ok || logger -t AdGuardHome "warning: DNS check after switching to redirect failed"
+	return 0
 }
 
 do_redirect()
@@ -491,11 +805,24 @@ do_redirect()
 }
 
 _do_redirect()
-{
+(
 	local section="$CONFIGURATION"
 	local ipv6_server=1
 	local enabled="$1"
 	local rc=0
+	local prep_failed=0
+	ADG_NEW_PORT=""
+
+	if command -v flock >/dev/null 2>&1; then
+		mkdir -p /var/lock
+		if exec 9>/var/lock/AdGuardHome-redirect.lock; then
+			flock -w 60 9 || {
+				logger -t AdGuardHome "redirect lock timeout"
+				echo -n "0" > /var/run/AdGredir
+				return 1
+			}
+		fi
+	fi
 
 	# Only report a working redirect after the rules were installed.
 	echo -n "0" > /var/run/AdGredir
@@ -526,13 +853,22 @@ _do_redirect()
 			elif [ "$old_redirect" = "dnsmasq-upstream" ]; then
 				stop_forward_dnsmasq "$old_port"
 			elif [ "$old_redirect" = "exchange" ]; then
-				rm_port53
+				rm_port53 || prep_failed=1
 			fi
 		fi
 	elif [ "$old_enabled" = "1" ] && [ "$enabled" = "1" ]; then
 		if [ "$old_redirect" = "redirect" ] && [ "$old_port" != "0" ]; then
 			clear_redirect_rules "$old_port" "$ipv6_server"
 		fi
+	fi
+
+	if [ -n "$ADG_NEW_PORT" ]; then
+		AdGuardHome_PORT="$ADG_NEW_PORT"
+		ADG_NEW_PORT=""
+	fi
+	if [ "$prep_failed" = "1" ]; then
+		echo -n "0" > /var/run/AdGredir
+		return 1
 	fi
 
 	# Only touch the UCI state when it really changes; otherwise every firewall
@@ -558,17 +894,35 @@ _do_redirect()
 		set_forward_dnsmasq "$AdGuardHome_PORT" || rc=1
 		;;
 	exchange)
-		if [ "$(uci -q get dhcp.@dnsmasq[0].port)" = "53" ]; then
-			use_port53 || rc=1
-		fi
+		use_port53 || rc=1
 		;;
 	esac
+
+	if [ "$rc" != "0" ]; then
+		# Keep the previous state so a failed transition is retried.
+		uci -q delete AdGuardHome.@AdGuardHome[0].old_redirect
+		uci -q delete AdGuardHome.@AdGuardHome[0].old_port
+		uci -q delete AdGuardHome.@AdGuardHome[0].old_enabled
+		uci -q add_list AdGuardHome.@AdGuardHome[0].old_redirect="$old_redirect"
+		uci -q add_list AdGuardHome.@AdGuardHome[0].old_port="$old_port"
+		uci -q add_list AdGuardHome.@AdGuardHome[0].old_enabled="$old_enabled"
+		uci -q commit AdGuardHome
+		echo -n "0" > /var/run/AdGredir
+		return 1
+	fi
+	if [ -n "$ADG_NEW_PORT" ] && [ "$ADG_NEW_PORT" != "$AdGuardHome_PORT" ]; then
+		AdGuardHome_PORT="$ADG_NEW_PORT"
+		uci -q delete AdGuardHome.@AdGuardHome[0].old_port
+		uci -q add_list AdGuardHome.@AdGuardHome[0].old_port="$AdGuardHome_PORT"
+		uci -q commit AdGuardHome
+		ADG_NEW_PORT=""
+	fi
 
 	if [ "$rc" = "0" ] && [ "$redirect" != "none" ]; then
 		echo -n "1" > /var/run/AdGredir
 	fi
 	return $rc
-}
+)
 
 get_filesystem()
 {
@@ -820,6 +1174,38 @@ start_service() {
 	config_get maxprocs $CONFIGURATION maxprocs "0"
 	config_get memlimit $CONFIGURATION memlimit "0"
 	config_get_bool jail $CONFIGURATION jail 0
+
+	# Make sure the configured DNS port is not held by a stale/foreign
+	# process. dnsmasq is moved by the mode switch, not killed here, so a
+	# partial exchange state does not lose DHCP/DNS.
+	local agh_port occupant=0 pid pname curr_dns
+	if [ -n "$configpath" ]; then
+		agh_port="$(config_editor "dns.port" "" "$configpath" "1")"
+		if [ -n "$agh_port" ] && ! port_free "$agh_port"; then
+			for pid in $(port_pids "$agh_port"); do
+				pname="$(pid_name "$pid")"
+				if [ "$pname" = "dnsmasq" ]; then
+					occupant=1
+				elif [ "$pname" = "AdGuardHome" ] || [ "$pname" = "$(basename "$binpath")" ]; then
+					occupant=2
+				fi
+			done
+			if [ "$occupant" = "2" ]; then
+				logger -t AdGuardHome "AGH port $agh_port held by AdGuardHome; procd will replace it"
+			elif [ "$occupant" = "1" ]; then
+				curr_dns="$(uci -q get dhcp.@dnsmasq[0].port)"
+				if [ "$agh_port" != "53" ] && [ "$curr_dns" = "$agh_port" ]; then
+					logger -t AdGuardHome "moving dnsmasq from AGH port $agh_port to 53"
+					restart_dnsmasq_on 53 "$agh_port" || true
+				else
+					logger -t AdGuardHome "AGH port $agh_port held by dnsmasq; mode switch will handle it"
+				fi
+			else
+				logger -t AdGuardHome "freeing AGH port $agh_port from stale process"
+				free_port_force "$agh_port" "start" || true
+			fi
+		fi
+	fi
 
 	procd_open_instance
 	get_tz
