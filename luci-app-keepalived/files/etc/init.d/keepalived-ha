@@ -1,0 +1,241 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+
+# 配置文件和脚本路径定义
+KEEPALIVED_CONF="/etc/keepalived/keepalived.conf"
+TEMPLATE_DIR="/etc/keepalived/template"
+VIP_UP_SCRIPT="/etc/keepalived/vip_up.sh"
+VIP_DOWN_SCRIPT="/etc/keepalived/vip_down.sh"
+WATCHDOG_SCRIPT="/etc/keepalived/failover_watchdog.sh"
+
+# 检查文件是否存在
+check_files() {
+    local missing=0
+    [ -d "$TEMPLATE_DIR" ] || { echo "缺少模板目录: $TEMPLATE_DIR"; missing=1; }
+    [ -f "$TEMPLATE_DIR/failover_watchdog.sh" ] || { echo "缺少模板: $TEMPLATE_DIR/failover_watchdog.sh"; missing=1; }
+    [ -f "$TEMPLATE_DIR/vip_up.sh" ] || { echo "缺少模板: $TEMPLATE_DIR/vip_up.sh"; missing=1; }
+    [ -f "$TEMPLATE_DIR/vip_down.sh" ] || { echo "缺少模板: $TEMPLATE_DIR/vip_down.sh"; missing=1; }
+    [ "$missing" -eq 1 ] && exit 1
+}
+
+# 初始化配置文件（确保所有必要的节和选项存在）
+init_config() {
+    local CONF="/etc/config/keepalived-ha"
+    local section_exists
+
+    # 确保配置文件存在
+    [ -f "$CONF" ] || touch "$CONF"
+
+    # 检查并添加general节
+    section_exists=$(uci -q get keepalived-ha.general)
+    if [ -z "$section_exists" ]; then
+        uci set keepalived-ha.general=general
+        uci set keepalived-ha.general.role='main'  # 默认角色
+        uci set keepalived-ha.general.vip='192.168.1.5'
+        uci set keepalived-ha.general.interface='br-lan'
+        uci set keepalived-ha.general.check_method='ping'
+        uci set keepalived-ha.general.vrid='51'
+        uci set keepalived-ha.general.advanced_mode='0'
+        uci set keepalived-ha.general.preempt='true'
+    else
+        # 确保general节的所有必要选项存在
+        uci -q get keepalived-ha.general.role || uci set keepalived-ha.general.role='main'
+        uci -q get keepalived-ha.general.vip || uci set keepalived-ha.general.vip='192.168.1.5'
+        uci -q get keepalived-ha.general.interface || uci set keepalived-ha.general.interface='br-lan'
+        uci -q get keepalived-ha.general.check_method || uci set keepalived-ha.general.check_method='ping'
+        uci -q get keepalived-ha.general.vrid || uci set keepalived-ha.general.vrid='51'
+        uci -q get keepalived-ha.general.advanced_mode || uci set keepalived-ha.general.advanced_mode='0'
+        uci -q get keepalived-ha.general.preempt || uci set keepalived-ha.general.preempt='true'
+    fi
+
+    # 检查并添加main节（主路由配置）
+    section_exists=$(uci -q get keepalived-ha.main)
+    if [ -z "$section_exists" ]; then
+        uci set keepalived-ha.main=main
+        uci set keepalived-ha.main.peer_ip='192.168.1.3'
+        uci set keepalived-ha.main.priority='50'
+        uci set keepalived-ha.main.fail_threshold='3'
+        uci set keepalived-ha.main.recover_threshold='2'
+        uci set keepalived-ha.main.check_interval='5'
+        uci set keepalived-ha.main.control_openclash='1'
+    else
+        # 确保main节的所有必要选项存在
+        uci -q get keepalived-ha.main.peer_ip || uci set keepalived-ha.main.peer_ip='192.168.1.3'
+        uci -q get keepalived-ha.main.priority || uci set keepalived-ha.main.priority='50'
+        uci -q get keepalived-ha.main.fail_threshold || uci set keepalived-ha.main.fail_threshold='3'
+        uci -q get keepalived-ha.main.recover_threshold || uci set keepalived-ha.main.recover_threshold='2'
+        uci -q get keepalived-ha.main.check_interval || uci set keepalived-ha.main.check_interval='5'
+        uci -q get keepalived-ha.main.control_openclash || uci set keepalived-ha.main.control_openclash='1'
+    fi
+
+    # 检查并添加peer节（从路由配置）
+    section_exists=$(uci -q get keepalived-ha.peer)
+    if [ -z "$section_exists" ]; then
+        uci set keepalived-ha.peer=peer
+        uci set keepalived-ha.peer.main_ip='192.168.1.2'
+        uci set keepalived-ha.peer.priority='100'
+    else
+        # 确保peer节的所有必要选项存在
+        uci -q get keepalived-ha.peer.main_ip || uci set keepalived-ha.peer.main_ip='192.168.1.2'
+        uci -q get keepalived-ha.peer.priority || uci set keepalived-ha.peer.priority='100'
+    fi
+
+    # 只有在有修改时才提交，避免不必要的配置变动
+    if uci -q changes keepalived-ha; then
+        uci commit keepalived-ha
+        logger -t keepalived-ha "UCI 配置已更新"
+    fi
+
+    # 设置非本地IP绑定参数
+    if ! grep -q "net.ipv4.ip_nonlocal_bind=1" /etc/sysctl.conf; then
+        echo "net.ipv4.ip_nonlocal_bind=1" >> /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1
+        logger -t keepalived-ha "已设置 ip_nonlocal_bind 参数"
+    fi
+}
+
+# 读取UCI配置并替换所有占位符
+replace_placeholders() {
+    # 读取基础配置
+    local ROLE=$(uci get keepalived-ha.general.role)
+    local VIP=$(uci get keepalived-ha.general.vip)
+    local INTERFACE=$(uci get keepalived-ha.general.interface)
+    local VRID=$(uci get keepalived-ha.general.vrid)
+    local PREEMPT=$(uci get keepalived-ha.general.preempt)
+
+    # 根据角色读取对应参数
+    if [ "$ROLE" = "main" ]; then
+        local CHECK_IP=$(uci get keepalived-ha.main.peer_ip)
+        local PRIORITY=$(uci get keepalived-ha.main.priority)
+        local FAIL_THRESHOLD=$(uci get keepalived-ha.main.fail_threshold)
+        local RECOVER_THRESHOLD=$(uci get keepalived-ha.main.recover_threshold)
+        local CHECK_INTERVAL=$(uci get keepalived-ha.main.check_interval)
+        local CONTROL_OPENCLASH=$(uci get keepalived-ha.main.control_openclash)
+        local TEMPLATE="$TEMPLATE_DIR/keepalived_main.conf"
+    else
+        local CHECK_IP=$(uci get keepalived-ha.peer.main_ip)
+        local PRIORITY=$(uci get keepalived-ha.peer.priority)
+        # 从路由建议使用自己的阈值配置，避免依赖主路由
+        local FAIL_THRESHOLD=$(uci get keepalived-ha.main.fail_threshold 2>/dev/null || echo 3)
+        local RECOVER_THRESHOLD=$(uci get keepalived-ha.main.recover_threshold 2>/dev/null || echo 2)
+        local CHECK_INTERVAL=$(uci get keepalived-ha.main.check_interval 2>/dev/null || echo 5)
+        local TEMPLATE="$TEMPLATE_DIR/keepalived_peer.conf"
+    fi
+
+    # 拷贝模板
+    cp "$TEMPLATE_DIR/failover_watchdog.sh" $WATCHDOG_SCRIPT
+    cp "$TEMPLATE_DIR/vip_up.sh" $VIP_UP_SCRIPT
+    cp "$TEMPLATE_DIR/vip_down.sh" $VIP_DOWN_SCRIPT
+
+    # 替换VIP绑定/解绑脚本中的占位符
+    sed -i "s|@VIP@|$VIP|g; s|@INTERFACE@|$INTERFACE|g" "$VIP_UP_SCRIPT" "$VIP_DOWN_SCRIPT"
+    logger -t keepalived-ha "已替换VIP脚本占位符"
+
+    logger -t keepalived-ha "当前参数: VIP:$VIP;ROLE:$ROLE;INTERFACE:$INTERFACE; CHECK_IP:$CHECK_IP;FAIL_THRESHOLD:$FAIL_THRESHOLD;RECOVER_THRESHOLD:$RECOVER_THRESHOLD;CHECK_INTERVAL:$CHECK_INTERVAL;s|@CONTROL_OPENCLASH@|$CONTROL_OPENCLASH|g;WATCHDOG_SCRIPT:$WATCHDOG_SCRIPT"
+
+    # 替换监控脚本中的占位符
+    sed -i "s|@VIP@|$VIP|g; s|@ROLE@|$ROLE|g; s|@INTERFACE@|$INTERFACE|g; s|@CHECK_IP@|$CHECK_IP|g; \
+            s|@FAIL_THRESHOLD@|$FAIL_THRESHOLD|g; s|@RECOVER_THRESHOLD@|$RECOVER_THRESHOLD|g; \
+            s|@CHECK_INTERVAL@|$CHECK_INTERVAL|g; s|@CONTROL_OPENCLASH@|$CONTROL_OPENCLASH|g" "$WATCHDOG_SCRIPT"
+    logger -t keepalived-ha "已替换监控脚本占位符"
+
+    # 生成keepalived主配置文件
+    sed "s|@VIP@|$VIP|g; s|@INTERFACE@|$INTERFACE|g; s|@VRID@|$VRID|g; \
+        s|@PRIORITY@|$PRIORITY|g; s|@PREEMPT@|$PREEMPT|g; s|@CONTROL_OPENCLASH@|$CONTROL_OPENCLASH|g" "$TEMPLATE" > "$KEEPALIVED_CONF"
+    logger -t keepalived-ha "已生成keepalived配置文件: $KEEPALIVED_CONF"
+    logger -t keepalived-ha "keepalived配置内容如下 >>>\n$(cat $KEEPALIVED_CONF)"
+
+    chmod +x "$VIP_UP_SCRIPT" "$VIP_DOWN_SCRIPT" "$WATCHDOG_SCRIPT"
+}
+
+# 配置nftables允许VRRP协议（不覆盖现有规则）
+configure_nftables() {
+    # 检查是否已存在VRRP规则
+    if ! nft list ruleset | grep -q "ip protocol 112 accept"; then
+        # 尝试追加规则到input链（如果链存在）
+        if nft list chain inet filter input >/dev/null 2>&1; then
+            nft add rule inet filter input ip protocol 112 accept
+            logger -t keepalived-ha "已添加VRRP规则到nftables"
+        else
+            # 链不存在时创建基础规则（兼容无默认规则的系统）
+            cat <<EOF > /etc/nftables.conf
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy accept;
+        ct state established,related accept
+        iifname "lo" accept
+        ip protocol icmp accept
+        ip protocol 112 accept  # VRRP
+    }
+}
+EOF
+            nft -f /etc/nftables.conf
+            logger -t keepalived-ha "已创建nftables基础规则并允许VRRP"
+        fi
+    else
+        logger -t keepalived-ha "nftables已存在VRRP规则，无需重复配置"
+    fi
+}
+
+remove_vip() {
+    if [ -x "$VIP_DOWN_SCRIPT" ]; then
+        "$VIP_DOWN_SCRIPT"
+    else
+        logger -t keepalived-ha "无法执行 $VIP_DOWN_SCRIPT：权限不足或文件不存在"
+    fi
+}
+
+start() {
+    check_files  # 检查依赖文件
+    init_config  # 确保配置完整
+    replace_placeholders  # 替换所有占位符
+    configure_nftables  # 配置防火墙规则
+
+    # 启动keepalived服务和监控脚本
+    echo "Starting keepalived-ha service..."
+    /usr/sbin/keepalived -f "$KEEPALIVED_CONF" -D >/dev/null 2>&1 && \
+    logger -t keepalived-ha "keepalived 服务已启动（使用配置:$KEEPALIVED_CONF）" || \
+    logger -t keepalived-ha "keepalived 服务启动失败"
+
+    echo "Starting failover_watchdog service..."
+    /etc/init.d/failover_watchdog restart >/dev/null 2>&1 && logger -t keepalived-ha "failover_watchdog 监控服务已启动" || logger -t keepalived-ha "failover_watchdog 监控服务启动失败"
+
+    echo "Starting keepalived-ha Test..."
+    /etc/keepalived/keepalived-ha-debug.sh  >/dev/null 2>&1 && \
+    logger -t keepalived-ha "keepalived 测试完成" || \
+    logger -t keepalived-ha "keepalived 测试失败"
+}
+
+stop() {
+    # 停止服务和脚本
+    echo "Stopping keepalived-ha service..."
+    /etc/init.d/keepalived stop >/dev/null 2>&1 && logger -t keepalived-ha "keepalived 服务已停止"
+    # 尝试通过PID文件终止
+    if [ -f "/var/run/keepalived.pid" ]; then
+        PID=$(cat "/var/run/keepalived.pid")
+        if kill "$PID" 2>/dev/null; then
+            echo "通过PID文件终止 keepalived（PID: $PID）"
+            rm -f "/var/run/keepalived.pid"
+        else
+            echo "PID文件中的进程不存在，尝试通过进程名终止"
+            # 精确匹配进程名为 "keepalived" 的进程（不匹配包含该字符串的其他进程）
+            pkill -x keepalived >/dev/null 2>&1 && logger -t keepalived-ha "keepalived 核心服务已停止"
+            rm -f "/var/run/keepalived.pid"
+        fi
+    else
+        # 无PID文件时直接按进程名终止
+        pkill -x keepalived >/dev/null 2>&1 && logger -t keepalived-ha "keepalived 核心服务已停止"
+    fi
+    /etc/init.d/failover_watchdog stop >/dev/null 2>&1 && logger -t keepalived-ha "failover_watchdog 监控服务已停止"
+    pkill -f failover_watchdog >/dev/null 2>&1 && logger -t keepalived-ha "failover_watchdog 所有服务已停止"
+    rm -f "/var/run/failover_watchdog.pid"
+}
+
+restart() {
+    remove_vip
+    stop
+    sleep 5  # 等待进程完全停止
+    start
+}
