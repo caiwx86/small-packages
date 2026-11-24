@@ -1,0 +1,20 @@
+name: scan-marker
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: OpenWrt scan.mk discovery marker
+        run: |
+          if ! grep -aqE 'call (Build/DefaultTargets|BuildPackage|KernelPackage)' Makefile; then
+            echo "::error file=Makefile::缺少 'call BuildPackage' 标记行，OpenWrt scan.mk 会静默漏扫该包"
+            exit 1
+          fi
+          echo "OK: Makefile 包含 scan.mk 发现标记"
