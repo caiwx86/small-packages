@@ -9,8 +9,12 @@ routers where the dashboard must be embedded in an HTTPS LuCI page.
 - Package name: netdata-ssl
 - Binary/init/config paths are the same as netdata: /usr/sbin/netdata,
   /etc/init.d/netdata, /etc/config/netdata.
-- The package declares PROVIDES:=netdata and CONFLICTS:=netdata. Do not select
-  the stock netdata package at the same time.
+- The package does NOT declare PROVIDES:=netdata or CONFLICTS:=netdata.
+  Do not select the stock netdata package at the same time anyway: both
+  install the same paths and the package manager will reject the file
+  conflict at install time.
+- openssl-util is a runtime dependency because the init script calls
+  /usr/bin/openssl to generate a fallback certificate.
 
 ## UCI options
 
