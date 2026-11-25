@@ -222,7 +222,7 @@ jobs:
         git_clone https://github.com/kenzok8/wall && mv -n wall/* ./ ; rm -rf wall
         ) &
         (
-        git_clone https://github.com/caiwx86/luci-app-keepalived-ha luci-app-keepalived
+        git_clone https://github.com/caiwx86/luci-app-keepalived-ha luci-app-keepalived-ha
         git_clone https://github.com/caiwx86/luci-app-netdata
         git_clone https://github.com/caiwx86/openwrt-netdata-ssl netdata
         git_clone https://github.com/sirpdboy/luci-app-taskplan taskplan && mvdir taskplan
