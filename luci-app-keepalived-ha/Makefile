@@ -2,10 +2,9 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-keepalived-ha
 PKG_VERSION:=1.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 include $(INCLUDE_DIR)/package.mk
-include $(TOPDIR)/feeds/luci/luci.mk
 
 # 定义包信息
 define Package/$(PKG_NAME)
