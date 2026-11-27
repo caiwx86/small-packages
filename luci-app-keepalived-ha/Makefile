@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-keepalived-ha
 PKG_VERSION:=1.0
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -68,6 +68,12 @@ define Package/$(PKG_NAME)/postinst
 	echo "Failover Watchdog 服务已自动启用开机启动"
 }
 exit 0
+endef
+
+# 纯文件包：没有编译步骤。显式定义空的 Build/Compile，避免 package.mk 的
+# 默认实现在空的 PKG_BUILD_DIR 里执行 make，报
+# "No targets specified and no makefile found"。
+define Build/Compile
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
