@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-keepalived-ha
 PKG_VERSION:=1.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -12,7 +12,7 @@ define Package/$(PKG_NAME)
 	CATEGORY:=LuCI
 	SUBMENU:=9. Services
 	TITLE:=Keepalived High Availability
-	DEPENDS:=+keepalived +nftables +ip-full +procps-ng-pkill +tcpdump
+	DEPENDS:=+keepalived +nftables +ip-full +procps-ng +procps-ng-pkill +tcpdump
 	PKGARCH:=all
 endef
 
